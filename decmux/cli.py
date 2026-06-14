@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
 
-from . import bus, cmux, session, watch
+from . import assets, bus, cmux, hooks, session, watch
 from . import store as store_mod
 from .store import Store
+
+AGENT_CMD = {"claude": "claude --dangerously-skip-permissions", "codex": "codex --yolo"}
 
 
 # --- workspace resolution (the caller's cmux workspace) ---
@@ -291,11 +294,59 @@ def cmd_ls(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_spawn(args: argparse.Namespace) -> int:
+    """Create a new agent in its own named cmux surface (optionally the manager)."""
+    ws_uuid = _ws_uuid(args)
+    wl = cmux.run_json("workspace", "list", "--id-format", "both", "--json")["workspaces"]
+    w = next((x for x in wl if x.get("id") == ws_uuid), None)
+    assert w, f"workspace {ws_uuid} not found"
+    ws_ref, cwd = w["ref"], w.get("current_directory", "")
+    store = Store(ws_uuid)
+    if args.manager and store.manager():
+        print(f"manager already bound for {ws_ref} (no-op)")
+        return 0
+    out = cmux.run("new-surface", "--type", "terminal", "--workspace", ws_ref,
+                   "--no-focus", "--id-format", "both")
+    m = re.search(r"(surface:\d+)\s+\(([0-9A-Fa-f-]+)\)", out)
+    assert m, f"could not parse new surface id from: {out!r}"
+    sref, suuid = m.group(1), m.group(2)
+    name = args.name or ("manager" if args.manager else "agent")
+    cmux.run("rename-tab", "--workspace", ws_ref, "--surface", sref, name)
+    cmd = args.command or AGENT_CMD.get(args.kind or "claude", AGENT_CMD["claude"])
+    cmd = assets.guarded_command(cmd, env={
+        "CMUX_WORKSPACE_ID": ws_uuid, "CMUX_WORKSPACE_REF": ws_ref,
+        "CMUX_SURFACE_ID": suuid, "CMUX_SURFACE_REF": sref,
+        "DECMUX_ROLE": "manager" if args.manager else "agent",
+    }, cwd=cwd or None)
+    cmux.run("send", "--workspace", ws_ref, "--surface", sref, cmd)
+    cmux.run("send-key", "--workspace", ws_ref, "--surface", sref, "Enter")
+    if args.manager:
+        store.bind_manager(surface_uuid=suuid, surface_ref=sref, cwd=cwd)
+        store.commit()
+    print(f"spawned {name}: {sref} @ {ws_ref}" + (" (manager)" if args.manager else ""))
+    return 0
+
+
+def cmd_hooks(args: argparse.Namespace) -> int:
+    if args.action == "install":
+        print(json.dumps(hooks.install_all_hooks(), indent=2))
+    else:
+        print(json.dumps(hooks.claude_status(), indent=2))
+    return 0
+
+
+def cmd_session_start(args: argparse.Namespace) -> int:
+    """Claude Code SessionStart hook entry: refresh + reload the decmux skill."""
+    return hooks.session_start()
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """Open this workspace's session and run foreground supervision.
 
     (The interactive chat/command program is added in a later issue; for now this
     is the headless supervision loop the no-arg `decmux` enters.)"""
+    assets.ensure()                 # zero-setup: skill + guard
+    hooks.install_all_hooks()       # idempotent SessionStart hook
     sess = session.Session(_ws_uuid(args), notify=not args.no_notify, pin=args.pin)
     print(f"decmux: supervising workspace {sess.workspace_uuid} (ctrl-c to stop)")
     return sess.run(interval=args.interval, ticks=args.ticks)
@@ -384,6 +435,21 @@ def build_parser() -> argparse.ArgumentParser:
     prep.add_argument("--limit", type=int, default=30)
     prep.add_argument("--workspace")
     prep.set_defaults(func=cmd_report)
+
+    psp = sub.add_parser("spawn", help="create a new agent in its own surface")
+    psp.add_argument("--name")
+    psp.add_argument("--kind", choices=["claude", "codex"], default="claude")
+    psp.add_argument("--manager", action="store_true")
+    psp.add_argument("--command")
+    psp.add_argument("--workspace")
+    psp.set_defaults(func=cmd_spawn)
+
+    ph = sub.add_parser("hooks", help="install/status the Claude Code SessionStart hook")
+    ph.add_argument("action", choices=["install", "status"], nargs="?", default="status")
+    ph.set_defaults(func=cmd_hooks)
+
+    sub.add_parser("session-start", help="(Claude SessionStart hook) refresh + reload skill") \
+        .set_defaults(func=cmd_session_start)
 
     return p
 
