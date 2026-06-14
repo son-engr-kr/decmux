@@ -21,6 +21,11 @@ from uuid import uuid4
 
 DB_ROOT = Path.home() / ".local" / "state" / "decmux"
 
+
+def _root() -> Path:
+    """State root, overridable via DECMUX_STATE_DIR (resolved at call time)."""
+    return Path(os.environ.get("DECMUX_STATE_DIR", str(DB_ROOT)))
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_state (
     surface_uuid   TEXT PRIMARY KEY,
@@ -85,7 +90,8 @@ _CLOSED = "('done','answered')"
 
 
 class Store:
-    def __init__(self, workspace_uuid: str = "default", *, root: Path = DB_ROOT) -> None:
+    def __init__(self, workspace_uuid: str = "default", *, root: Path | None = None) -> None:
+        root = root if root is not None else _root()
         self.workspace_uuid = workspace_uuid
         self.dir = root / workspace_uuid
         self.files_dir = self.dir / "files"
@@ -448,6 +454,12 @@ class Store:
             f"SELECT 1 FROM outbox WHERE task_id=? AND {_PENDING}", (tid,),
         ).fetchone()
         return bool(row)
+
+    def task_pending_delivery_count(self, tid: int) -> int:
+        row = self.db.execute(
+            f"SELECT COUNT(*) AS n FROM outbox WHERE task_id=? AND {_PENDING}", (tid,),
+        ).fetchone()
+        return int(row["n"] or 0)
 
     def enqueue_outbox(self, *, surface_uuid, surface_ref, body, frm="",
                        task_id: int | None = None, now=None) -> int:
