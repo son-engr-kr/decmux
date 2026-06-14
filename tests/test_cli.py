@@ -53,6 +53,6 @@ def test_send_creates_triage_task(wired):
     assert len(tasks) == 1 and tasks[0]["status"] == "triage"
 
 
-def test_parser_defaults_to_run():
+def test_parser_defaults_to_app():
     args = cli.build_parser().parse_args([])
-    assert args.func is cli.cmd_run
+    assert args.func is cli.cmd_app   # no-arg `decmux` opens the interactive REPL

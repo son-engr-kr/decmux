@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 
-from . import assets, bus, cmux, hooks, session, watch
+from . import app, assets, bus, cmux, hooks, session, watch
 from . import store as store_mod
 from .store import Store
 
@@ -340,13 +340,18 @@ def cmd_session_start(args: argparse.Namespace) -> int:
     return hooks.session_start()
 
 
-def cmd_run(args: argparse.Namespace) -> int:
-    """Open this workspace's session and run foreground supervision.
-
-    (The interactive chat/command program is added in a later issue; for now this
-    is the headless supervision loop the no-arg `decmux` enters.)"""
+def cmd_app(args: argparse.Namespace) -> int:
+    """The no-arg entry: open the interactive REPL (chat + commands), supervising
+    in the background."""
     assets.ensure()                 # zero-setup: skill + guard
     hooks.install_all_hooks()       # idempotent SessionStart hook
+    return app.repl(_ws_uuid(args), notify=not args.no_notify)
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    """Headless foreground supervision (no REPL) — `decmux run`."""
+    assets.ensure()
+    hooks.install_all_hooks()
     sess = session.Session(_ws_uuid(args), notify=not args.no_notify, pin=args.pin)
     print(f"decmux: supervising workspace {sess.workspace_uuid} (ctrl-c to stop)")
     return sess.run(interval=args.interval, ticks=args.ticks)
@@ -354,7 +359,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="decmux", description="per-workspace control plane for cmux agents")
-    p.set_defaults(func=cmd_run, interval=5.0, ticks=0, pin=False, no_notify=False, workspace=None)
+    p.set_defaults(func=cmd_app, interval=5.0, ticks=0, pin=False, no_notify=False, workspace=None)
     sub = p.add_subparsers(dest="command")
 
     pr = sub.add_parser("run", help="run foreground supervision for this workspace")
