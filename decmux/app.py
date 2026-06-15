@@ -1,31 +1,56 @@
-"""Interactive control program (line REPL).
+"""Interactive control program.
 
-`decmux` with no args opens this: you chat to the manager and run `/commands`,
-while the supervision session runs in a background thread. Deliberately a
-line-oriented REPL, not a full-screen TUI — cmux is the window; this is just the
-de-mixed input channel plus on-demand views.
+`decmux` with no args opens this: a prompt-toolkit REPL with a persistent bottom
+prompt + live status toolbar, while a background thread runs supervision and
+another tails the store so manager->you messages and state transitions appear in
+real time *above* the prompt (patch_stdout) instead of fighting it.
 
-Incoming manager->you messages fire a desktop `cmux notify` (from the bus) and are
-visible with `/feed`, so there are no async prints fighting the prompt.
+It is deliberately a line REPL, not a full-screen TUI — cmux stays the window to
+watch real agent surfaces; this is the de-mixed input channel plus live signals.
 """
 
 from __future__ import annotations
 
+import sqlite3
 import threading
+import time
+from collections import Counter
 
 from . import bus
 from . import session as session_mod
+from .store import Store
+
+_COMMANDS = ["/to", "/status", "/tasks", "/feed", "/report", "/goal", "/help", "/quit"]
 
 HELP = """commands:
-  <text>            send <text> to the current target (default: manager)
-  /to <name>        set the target (manager | you | <agent> | all)
+  <text>            send to the current target (default: manager)
+  /to <name>        set target (manager | you | <agent> | all)
   /status           agent states (from the supervisor)
   /tasks            open tasks
   /feed [n]         recent human-facing chat
   /report [n]       recent state transitions
   /goal <text>      set the workspace goal (briefs the manager)
-  /help             this help
-  /quit             exit (supervision stops)"""
+  /help  /quit"""
+
+_GLYPH = {"working": "●", "idle": "○", "stuck": "▲", "error": "✖",
+          "dead": "☠", "budget": "$", "blocked-on-decision": "?"}
+
+
+class AppState:
+    def __init__(self, store: Store) -> None:
+        # This Store belongs to the thread that constructed AppState (the prompt
+        # loop). Other threads (supervision, feed poller) use their own.
+        self.store = store
+        self.workspace_uuid = store.workspace_uuid
+        self.target = "manager"
+        self.running = True
+
+
+def _int(rest: str, default: int) -> int:
+    try:
+        return int(rest)
+    except ValueError:
+        return default
 
 
 def _status(store) -> None:
@@ -57,60 +82,108 @@ def _report(store, n: int) -> None:
         print(f"  {t['from_state']} -> {t['to_state']}  {t['title']}")
 
 
-def _int(rest: str, default: int) -> int:
-    try:
-        return int(rest)
-    except ValueError:
-        return default
+def _handle(st: AppState, line: str) -> bool:
+    """Process one input line. Returns False to quit."""
+    line = line.strip()
+    if not line:
+        return True
+    if line.startswith("/"):
+        cmd, _, rest = line[1:].partition(" ")
+        rest = rest.strip()
+        if cmd in ("quit", "exit", "q"):
+            return False
+        if cmd == "help":
+            print(HELP)
+        elif cmd == "to" and rest:
+            st.target = rest
+            print(f"target -> {st.target}")
+        elif cmd == "status":
+            _status(st.store)
+        elif cmd == "tasks":
+            _tasks(st.store)
+        elif cmd == "feed":
+            _feed(st.store, _int(rest, 20))
+        elif cmd == "report":
+            _report(st.store, _int(rest, 20))
+        elif cmd == "goal" and rest:
+            res = bus.send(st.store, "/goal " + rest, to="manager", frm="you")
+            print(f"goal set (delivered {res.get('delivered', 0)}, queued {res.get('queued', 0)})")
+        else:
+            print("unknown command; /help")
+        return True
+    res = bus.send(st.store, line, to=st.target, frm="you")
+    if res.get("withheld_status"):
+        print("withheld (status-only downward); use the agent's name or --force")
+        return True
+    extra = " [gated->manager]" if res.get("gated_to_manager") else ""
+    print(f"-> {res['dst']} (delivered {res['delivered']}, queued {res.get('queued', 0)}){extra}")
+    return True
+
+
+def _feed_poller(st: AppState) -> None:
+    """Tail the store; print new manager->you messages and alert transitions.
+
+    Uses its own Store connection (sqlite connections are per-thread)."""
+    store = Store(st.workspace_uuid)
+    last_chat = store.last_chat_id()
+    last_tr = store.last_transition_id()
+    while st.running:
+        try:
+            for c in store.chat_after(last_chat, kind="chat"):
+                last_chat = c["id"]
+                if c["frm"] != "you":           # incoming, not our own echo
+                    print(f"[{c['frm']}] {c['body']}")
+            for t in store.transitions_after(last_tr):
+                last_tr = t["id"]
+                print(f"{_GLYPH.get(t['to_state'], '·')} {bus._clean_name(t['title'] or '')} "
+                      f"-> {t['to_state']}")
+        except sqlite3.OperationalError:
+            pass   # a momentary lock must never kill the display thread
+        time.sleep(1.5)
+
+
+def _toolbar(st: AppState) -> str:
+    counts = Counter(a["state"] for a in st.store.list_agents())
+    parts = "  ".join(f"{_GLYPH.get(s, '·')}{n}" for s, n in counts.items()) or "no agents"
+    goal = st.store.get_goal()
+    tail = f"  goal: {goal[:32]}" if goal else ""
+    return f" decmux  {parts}  open:{len(st.store.open_tasks())}  ->{st.target}{tail} "
 
 
 def repl(workspace_uuid: str, *, notify: bool = True) -> int:
-    sess = session_mod.Session(workspace_uuid, notify=notify)
-    threading.Thread(target=sess.run, daemon=True).start()
-    store = sess.store
-    target = "manager"
-    print(f"decmux — workspace {workspace_uuid}. supervising in the background.")
-    print("type a message for the manager; /help for commands; /quit to exit.")
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.completion import WordCompleter
+    from prompt_toolkit.patch_stdout import patch_stdout
+
+    st = AppState(Store(workspace_uuid))   # this thread's connection
+    holder: dict = {}
+
+    def _supervise() -> None:
+        # build the Session in its own thread so its store connection lives here
+        s = session_mod.Session(workspace_uuid, notify=notify, pin=True)
+        holder["sess"] = s
+        s.run()
+
+    threading.Thread(target=_supervise, daemon=True).start()
+    threading.Thread(target=_feed_poller, args=(st,), daemon=True).start()
+    psession: PromptSession = PromptSession()
+    print(f"decmux — workspace {workspace_uuid}. supervising in the background. /help · /quit")
     try:
-        while True:
-            try:
-                line = input(f"decmux[{target}]> ").strip()
-            except EOFError:
-                break
-            if not line:
-                continue
-            if line.startswith("/"):
-                cmd, _, rest = line[1:].partition(" ")
-                rest = rest.strip()
-                if cmd in ("quit", "exit", "q"):
+        with patch_stdout():
+            while True:
+                names = [bus._clean_name(a["title"]) for a in st.store.list_agents()]
+                completer = WordCompleter(_COMMANDS + names + ["manager", "you", "all"],
+                                          sentence=True)
+                try:
+                    line = psession.prompt(f"decmux[{st.target}]> ",
+                                           completer=completer,
+                                           bottom_toolbar=lambda: _toolbar(st))
+                except (EOFError, KeyboardInterrupt):
                     break
-                elif cmd == "help":
-                    print(HELP)
-                elif cmd == "to" and rest:
-                    target = rest
-                    print(f"target -> {target}")
-                elif cmd == "status":
-                    _status(store)
-                elif cmd == "tasks":
-                    _tasks(store)
-                elif cmd == "feed":
-                    _feed(store, _int(rest, 20))
-                elif cmd == "report":
-                    _report(store, _int(rest, 20))
-                elif cmd == "goal" and rest:
-                    res = bus.send(store, "/goal " + rest, to="manager", frm="you")
-                    print(f"goal set (delivered {res.get('delivered', 0)}, "
-                          f"queued {res.get('queued', 0)})")
-                else:
-                    print("unknown command; /help")
-            else:
-                res = bus.send(store, line, to=target, frm="you")
-                if res.get("withheld_status"):
-                    print("withheld (status-only downward); use the agent's name or --force")
-                    continue
-                extra = " [gated->manager]" if res.get("gated_to_manager") else ""
-                print(f"-> {res['dst']} (delivered {res['delivered']}, "
-                      f"queued {res.get('queued', 0)}){extra}")
+                if not _handle(st, line):
+                    break
     finally:
-        sess.close()
+        st.running = False
+        if holder.get("sess") is not None:
+            holder["sess"].close()
     return 0

@@ -3,7 +3,9 @@ name = "decmux"
 version = "0.1.0"
 description = "Per-workspace, foreground control plane for cmux-hosted AI coding agents"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "prompt_toolkit>=3.0",
+]
 
 [project.scripts]
 decmux = "decmux.cli:main"

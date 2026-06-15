@@ -97,7 +97,7 @@ manager is told, and the human is told if the manager does not act.
 ## Stack
 
 Python (managed with `uv`). The supervision loop is single-threaded async. The
-interactive program is a terminal app — framework TBD (see Open questions).
+interactive program is a `prompt_toolkit` line REPL (see Resolved decisions).
 
 ## What carries over vs. what is dropped
 
@@ -214,9 +214,14 @@ The full mined list (62 items) is the reference; the load-bearing ones:
   `cmux send`/`send-key`/input RPCs and arg'd `respawn-pane`; `DECMUX_REAL_CMUX`
   lets decmux's own calls reach real cmux.
 
-## Open questions
+## Resolved decisions
 
-- **Interactive program style:** line-oriented REPL (prompt_toolkit / plain
-  async, prints live notifications inline — closest to "CLI 중심, 있는 그대로")
-  vs. full-screen TUI (Textual — chat + status + tasks + feed panes). Leaning
-  REPL to avoid re-introducing a UI layer. Decide at build time.
+- **Interactive program style:** a line REPL built on `prompt_toolkit` — a
+  persistent bottom prompt + live status toolbar, with manager→you messages and
+  state transitions streaming in above the prompt (`patch_stdout`), plus
+  command/agent-name completion. Not a full-screen TUI: cmux stays the window for
+  watching real agent surfaces; the REPL is the de-mixed input channel + live
+  signals. Implemented in `app.py`.
+- **Threading:** the REPL runs supervision and a store-tailing feed poller in
+  background threads; each thread holds its own `Store` connection (SQLite in WAL
+  mode + busy timeout) since connections are not shared across threads.

@@ -98,6 +98,12 @@ class Store:
         self.dir.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.dir / "store.db")
         self.db.row_factory = sqlite3.Row
+        # WAL + a busy timeout let the REPL's threads each hold their own Store
+        # connection to the same file (supervision writes, input writes, the live
+        # feed reads) without "database is locked" errors. Each thread must use its
+        # own Store instance (sqlite connections are not shared across threads).
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA busy_timeout=3000")
         self.db.executescript(SCHEMA)
         self.db.commit()
 
@@ -201,6 +207,17 @@ class Store:
     def recent_transitions(self, limit: int = 50) -> list[dict]:
         rows = self.db.execute(
             "SELECT * FROM transitions ORDER BY ts DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def last_transition_id(self) -> int:
+        return int(self.db.execute(
+            "SELECT COALESCE(MAX(id),0) AS m FROM transitions").fetchone()["m"])
+
+    def transitions_after(self, after_id: int, limit: int = 100) -> list[dict]:
+        """New transition rows with id > after_id, oldest first (for a live tail)."""
+        rows = self.db.execute(
+            "SELECT * FROM transitions WHERE id>? ORDER BY id LIMIT ?", (after_id, limit),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -409,14 +426,30 @@ class Store:
 
     def recent_chat(self, limit: int = 150, kind: str | None = None) -> list[dict]:
         # kind='chat' -> human-facing conversation; 'report' -> operational; None -> all.
-        where = f"WHERE kind=?" if kind else ""
+        where = "WHERE kind=?" if kind else ""
         params: list = [kind] if kind else []
         params.append(limit)
         rows = self.db.execute(
-            f"SELECT ts, frm, dst, body, kind FROM chat {where} ORDER BY id DESC LIMIT ?",
+            f"SELECT id, ts, frm, dst, body, kind FROM chat {where} ORDER BY id DESC LIMIT ?",
             params,
         ).fetchall()
         return [dict(r) for r in reversed(rows)]
+
+    def last_chat_id(self) -> int:
+        return int(self.db.execute("SELECT COALESCE(MAX(id),0) AS m FROM chat").fetchone()["m"])
+
+    def chat_after(self, after_id: int, kind: str | None = None, limit: int = 100) -> list[dict]:
+        """New chat rows with id > after_id, oldest first (for a live tail)."""
+        where = "WHERE id>?"
+        params: list = [after_id]
+        if kind:
+            where += " AND kind=?"
+            params.append(kind)
+        params.append(limit)
+        rows = self.db.execute(
+            f"SELECT id, ts, frm, dst, body, kind FROM chat {where} ORDER BY id LIMIT ?", params,
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     # --- file attachments (on disk under this workspace's files/) ---
     def save_file(self, *, data: bytes, name: str) -> dict:

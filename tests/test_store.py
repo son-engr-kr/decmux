@@ -104,3 +104,19 @@ def test_goal_roundtrip(tmp_path):
     assert s.get_goal() == ""
     s.set_goal("ship v1")
     assert s.get_goal() == "ship v1"
+
+
+def test_chat_and_transition_watermarks(tmp_path):
+    s = mk(tmp_path)
+    base_chat = s.last_chat_id()
+    s.add_chat(frm="you", dst="manager", body="hi", kind="chat")
+    s.add_chat(frm="manager", dst="you", body="ok", kind="chat")
+    new = s.chat_after(base_chat, kind="chat")
+    assert [c["body"] for c in new] == ["hi", "ok"]
+    # watermark advances; nothing new after the last id
+    assert s.chat_after(new[-1]["id"]) == []
+
+    base_tr = s.last_transition_id()
+    s.record_transition(surface_uuid="a", title="A", from_state="idle", to_state="stuck")
+    tr = s.transitions_after(base_tr)
+    assert len(tr) == 1 and tr[0]["to_state"] == "stuck"
