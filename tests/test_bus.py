@@ -129,34 +129,59 @@ def test_send_force_overrides_withhold(s, recorder):
 
 @pytest.fixture
 def fake_cmux(monkeypatch, tmp_path):
+    """Records cmux.run calls; new-pane -> surface:5, new-surface -> surface:6."""
     from decmux import assets, cmux
     monkeypatch.setattr(cmux, "CMUX_BIN", "/usr/bin/cmux")
     monkeypatch.setattr(assets, "GUARD_DIR", tmp_path / "bin")
     monkeypatch.setattr(assets, "GUARD_CMUX", tmp_path / "bin" / "cmux")
+    calls = []
 
     def run(*a):
-        return "OK surface:5 pane:7 workspace:1\n" if a and a[0] == "new-pane" else ""
+        calls.append(a)
+        if a and a[0] == "new-pane":
+            return "OK surface:5 pane:5 workspace:1\n"
+        if a and a[0] == "new-surface":
+            return "surface:6 (DEADBEEF-0006)\n"     # uuid must be hex for the parser
+        return ""
 
     def run_json(*a):
         if a and a[0] == "identify":
-            return {"caller": {"surface_id": "AAAA-5", "window_ref": "window:1"}}
+            ref = a[a.index("--surface") + 1]
+            n = ref.rsplit(":", 1)[-1]
+            return {"caller": {"surface_ref": ref, "surface_id": f"UUID-{n}",
+                               "pane_ref": f"pane:{n}", "window_ref": "window:1"}}
         return {"workspaces": [{"id": "ws-test", "ref": "workspace:1",
                                 "current_directory": "/x"}]}
     monkeypatch.setattr(cmux, "run", run)
     monkeypatch.setattr(cmux, "run_json", run_json)
+    return calls
 
 
-def test_spawn_agent_marks_managed(s, fake_cmux):
-    res = bus.spawn_agent(s, name="w1", manager=False)
-    assert res["created"] and res["surface_ref"] == "surface:5"
-    assert s.is_managed("AAAA-5")
-    assert not s.manager()                    # a worker doesn't bind the manager
-
-
-def test_spawn_manager_binds_and_is_idempotent(s, fake_cmux):
+def test_spawn_manager_splits_and_binds(s, fake_cmux):
     res = bus.spawn_agent(s, manager=True)
-    assert res["manager"] and s.manager()[0] == "AAAA-5"
-    assert bus.spawn_agent(s, manager=True)["created"] is False   # already bound
+    assert res["manager"] and s.manager()[0] == "UUID-5" and s.is_managed("UUID-5")
+    assert any(c[0] == "new-pane" for c in fake_cmux)               # manager: own split pane
+    assert bus.spawn_agent(s, manager=True)["created"] is False      # idempotent
+
+
+def test_spawn_worker_without_manager_splits(s, fake_cmux):
+    res = bus.spawn_agent(s, name="w1", manager=False)
+    assert res["surface_ref"] == "surface:5" and s.is_managed("UUID-5")
+    assert any(c[0] == "new-pane" for c in fake_cmux) and not s.manager()
+
+
+def test_spawn_worker_joins_manager_pane_as_tab(s, fake_cmux):
+    s.bind_manager(surface_uuid="UUID-5", surface_ref="surface:5", cwd="")
+    s.mark_managed("UUID-5", "manager")
+    s.commit()
+    res = bus.spawn_agent(s, manager=False)
+    assert res["surface_ref"] == "surface:6" and s.is_managed("DEADBEEF-0006")
+    assert any(c[0] == "new-surface" and "--pane" in c for c in fake_cmux)  # joined as a tab
+    assert not any(c[0] == "new-pane" for c in fake_cmux)                    # did not split
+
+
+def test_spawn_default_name_has_surface_number(s, fake_cmux):
+    assert bus.spawn_agent(s, manager=True)["name"] == "manager-5"
 
 
 def test_deliver_protocol_queues(s):

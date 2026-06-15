@@ -535,12 +535,11 @@ def flush_outbox(store, surface_uuid: str, surface_ref: str, ws_ref: str,
 AGENT_CMD = {"claude": "claude --dangerously-skip-permissions", "codex": "codex --yolo"}
 
 
-def _surface_window(surface_ref: str) -> str | None:
-    """The window a surface lives in (for clustering spawns in the manager's window)."""
+def _surface_pane(surface_ref: str) -> str | None:
+    """The pane a surface lives in (workers join the manager's pane as tabs)."""
     try:
-        c = cmux.run_json("identify", "--surface", surface_ref, "--id-format", "both",
-                          "--json")["caller"]
-        return c.get("window_ref")
+        return cmux.run_json("identify", "--surface", surface_ref, "--id-format", "both",
+                             "--json")["caller"].get("pane_ref")
     except (subprocess.CalledProcessError, OSError, KeyError):
         return None
 
@@ -548,11 +547,11 @@ def _surface_window(surface_ref: str) -> str | None:
 def spawn_agent(store, *, name: str | None = None, kind: str = "claude",
                 manager: bool = False, command: str | None = None,
                 direction: str = "right") -> dict:
-    """Split a new pane and launch a decmux-managed agent in it.
+    """Launch a decmux-managed agent. The manager gets its own split pane; workers
+    join the manager's pane as TABS (so the window isn't endlessly subdivided).
 
-    Workers split into the manager's window so the team clusters there. Records the
-    surface in the managed registry, sets DECMUX_ROLE + the cmux guard, binds the
-    manager if requested, and onboards a codex agent via the protocol."""
+    Records the surface in the managed registry, sets DECMUX_ROLE + the cmux guard,
+    binds the manager if requested, and onboards a codex agent via the protocol."""
     wl = cmux.run_json("workspace", "list", "--id-format", "both", "--json")["workspaces"]
     w = next((x for x in wl if x.get("id") == store.workspace_uuid), None)
     assert w, "workspace not found"
@@ -560,20 +559,30 @@ def spawn_agent(store, *, name: str | None = None, kind: str = "claude",
     mgr = store.manager()
     if manager and mgr:
         return {"created": False, "reason": "manager already bound", "surface_ref": mgr[1]}
-    # split (new-pane); a worker goes into the manager's window so agents cluster there
-    args = ["new-pane", "--type", "terminal", "--direction", direction,
-            "--workspace", ws_ref, "--focus", "false"]
-    if mgr and not manager:
-        window = _surface_window(mgr[1])
-        if window:
-            args += ["--window", window]
-    out = cmux.run(*args)                       # "OK surface:N pane:M workspace:W"
-    mref = re.search(r"(surface:\d+)", out)
-    assert mref, f"could not parse new-pane output: {out!r}"
-    sref = mref.group(1)
-    suuid = cmux.run_json("identify", "--surface", sref, "--id-format", "both",
-                          "--json")["caller"]["surface_id"]
-    nm = name or ("manager" if manager else "agent")
+
+    if manager or not mgr:
+        # the manager (or a first agent with no manager) gets its own split pane
+        out = cmux.run("new-pane", "--type", "terminal", "--direction", direction,
+                       "--workspace", ws_ref, "--focus", "false")  # "OK surface:N pane:M ws:W"
+        mref = re.search(r"(surface:\d+)", out)
+        assert mref, f"could not parse new-pane output: {out!r}"
+        sref = mref.group(1)
+        suuid = cmux.run_json("identify", "--surface", sref, "--id-format", "both",
+                              "--json")["caller"]["surface_id"]
+    else:
+        # a worker joins the manager's pane as a tab — no further splitting
+        args = ["new-surface", "--type", "terminal", "--workspace", ws_ref,
+                "--focus", "false", "--id-format", "both"]
+        pane = _surface_pane(mgr[1])
+        if pane:
+            args += ["--pane", pane]
+        out = cmux.run(*args)
+        m = re.search(r"(surface:\d+)\s+\(([0-9A-Fa-f-]+)\)", out)
+        assert m, f"could not parse new-surface output: {out!r}"
+        sref, suuid = m.group(1), m.group(2)
+
+    # default name carries the surface number so unnamed agents don't collide
+    nm = name or f"{'manager' if manager else 'agent'}-{sref.rsplit(':', 1)[-1]}"
     cmux.run("rename-tab", "--workspace", ws_ref, "--surface", sref, nm)
     store.mark_managed(suuid, role=("manager" if manager else "agent"), kind=kind)
     cmd = assets.guarded_command(
