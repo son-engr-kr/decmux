@@ -192,6 +192,17 @@ def test_deliver_protocol_queues(s):
     assert pending and pending[0]["body"] == assets.PROTOCOL
 
 
+def test_continue_thread_rebriefs_manager(s, recorder):
+    tid = s.add_task(kind="command", body="fix login bug", to_whom="manager")
+    s.task_progress(tid, "found token expiry", author="manager")
+    add_agent(s, uuid="m1", ref="surface:9", name="manager", state="idle")
+    s.bind_manager(surface_uuid="m1", surface_ref="surface:9", cwd="/x")
+    bus.continue_thread(s, tid, "any update?", frm="human")
+    assert any(c["body"] == "any update?" for c in s.task_comments(tid))   # follow-up recorded
+    msg = recorder[-1][1]                                                   # delivered to manager
+    assert "fix login bug" in msg and "found token expiry" in msg          # thread re-brief inline
+
+
 def test_send_human_gate_reroutes_to_manager(s, recorder):
     add_agent(s, uuid="m1", ref="surface:9", name="manager", state="idle")
     s.bind_manager(surface_uuid="m1", surface_ref="surface:9", cwd="/x")

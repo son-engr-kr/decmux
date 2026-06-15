@@ -21,8 +21,8 @@ from . import session as session_mod
 from .store import Store
 
 _COMMANDS = ["/spawn-manager", "/spawn", "/goal", "/to", "/status", "/tasks",
-             "/task", "/feed", "/report", "/help", "/quit"]
-_TARGETS = ["manager", "you", "all"]
+             "/task", "/new", "/feed", "/report", "/help", "/quit"]
+_TARGETS = ["manager", "human", "all"]
 
 # shown beside each completion (prompt_toolkit display_meta) when it is focused
 _CMD_META = {
@@ -32,7 +32,8 @@ _CMD_META = {
     "/to": "set message target (manager | you | <agent> | all)",
     "/status": "agent states (from the supervisor)",
     "/tasks": "open tasks  (/tasks closed for finished)",
-    "/task": "one task's detail + timeline  (/task <id>)",
+    "/task": "focus a task thread + show its timeline  (/task <id>)",
+    "/new": "start a new thread (fresh task)  (/new [text])",
     "/feed": "recent human-facing chat  (/feed N)",
     "/report": "recent state transitions  (/report N)",
     "/help": "list commands",
@@ -40,7 +41,7 @@ _CMD_META = {
 }
 _TARGET_META = {
     "manager": "the bound manager",
-    "you": "the human (refined updates only)",
+    "human": "the human (refined updates only)",
     "all": "broadcast to all agents",
 }
 
@@ -55,14 +56,15 @@ def _completions(store) -> tuple[list[str], dict[str, str]]:
     return words, meta
 
 HELP = """commands:  (Enter sends · Alt+Enter for a newline)
-  <text>            send to the current target (default: manager)
+  <text>            send to target; to the manager it continues the current thread
+  /new [text]       start a new thread (fresh task)
+  /task <id>        focus a task thread + show its timeline
+  /tasks [closed]   open tasks (or finished ones)
   /spawn-manager    create the manager in a new surface
   /spawn [name]     add a worker agent (joins the manager's pane as a tab)
   /goal <text>      set the workspace goal (briefs the manager)
-  /to <name>        set target (manager | you | <agent> | all)
+  /to <name>        set target (manager | human | <agent> | all)
   /status           agent states (from the supervisor)
-  /tasks [closed]   open tasks (or finished ones)
-  /task <id>        one task's detail + timeline
   /feed [n]         recent human-facing chat
   /report [n]       recent state transitions
   /help  /quit"""
@@ -78,7 +80,15 @@ class AppState:
         self.store = store
         self.workspace_uuid = store.workspace_uuid
         self.target = "manager"
+        self.thread: int | None = None     # current task thread (Q&A continues here)
         self.running = True
+
+
+def _task_open(store, tid: int) -> bool:
+    try:
+        return store.get_task(tid)["status"] not in _CLOSED
+    except AssertionError:
+        return False
 
 
 def _int(rest: str, default: int) -> int:
@@ -176,7 +186,7 @@ def _handle(st: AppState, line: str) -> bool:
             print(HELP)
         elif cmd == "to":
             if not rest:
-                print("usage: /to <manager | you | all | agent>")
+                print("usage: /to <manager | human | all | agent>")
             else:
                 st.target = rest
                 print(f"target -> {st.target}")
@@ -186,9 +196,19 @@ def _handle(st: AppState, line: str) -> bool:
             _tasks(st.store, closed=(rest == "closed"))
         elif cmd == "task":
             if rest.isdigit():
+                st.thread = int(rest)            # focus this thread
                 _task_detail(st.store, int(rest))
             else:
                 print("usage: /task <id>")
+        elif cmd == "new":
+            st.thread = None
+            if rest:
+                res = bus.send(st.store, rest, to="manager", frm="human")
+                st.thread = res.get("task")
+                print(f"-> new #{st.thread} (delivered {res.get('delivered', 0)}, "
+                      f"queued {res.get('queued', 0)})")
+            else:
+                print("new thread — your next message starts a fresh task")
         elif cmd == "feed":
             _feed(st.store, _int(rest, 20))
         elif cmd == "report":
@@ -197,7 +217,7 @@ def _handle(st: AppState, line: str) -> bool:
             if not rest:
                 print("usage: /goal <text>")
             else:
-                res = bus.send(st.store, "/goal " + rest, to="manager", frm="you")
+                res = bus.send(st.store, "/goal " + rest, to="manager", frm="human")
                 print(f"goal set (delivered {res.get('delivered', 0)}, queued {res.get('queued', 0)})")
         elif cmd in ("spawn", "spawn-manager"):
             res = bus.spawn_agent(st.store, name=(rest or None), manager=(cmd == "spawn-manager"))
@@ -212,12 +232,21 @@ def _handle(st: AppState, line: str) -> bool:
         else:
             print(f"unknown command: /{cmd}  (try /help)")
         return True
-    res = bus.send(st.store, line, to=st.target, frm="you")
+    # chatting the manager continues the current task thread (re-briefed each time)
+    if st.target == "manager" and st.thread is not None and _task_open(st.store, st.thread):
+        res = bus.continue_thread(st.store, st.thread, line, frm="human")
+        print(f"-> #{st.thread} (delivered {res['delivered']}, queued {res['queued']})")
+        return True
+    res = bus.send(st.store, line, to=st.target, frm="human")
     if res.get("withheld_status"):
         print("withheld (status-only downward); use the agent's name or --force")
         return True
+    if st.target == "manager" and res.get("task"):
+        st.thread = res["task"]            # a fresh message to the manager opens a thread
+    tid = f" #{res['task']}" if res.get("task") else ""
     extra = " [gated->manager]" if res.get("gated_to_manager") else ""
-    print(f"-> {res['dst']} (delivered {res['delivered']}, queued {res.get('queued', 0)}){extra}")
+    print(f"-> {res['dst']}{tid} (delivered {res['delivered']}, "
+          f"queued {res.get('queued', 0)}){extra}")
     return True
 
 
@@ -232,7 +261,7 @@ def _feed_poller(st: AppState) -> None:
         try:
             for c in store.chat_after(last_chat, kind="chat"):
                 last_chat = c["id"]
-                if c["frm"] != "you":           # incoming, not our own echo
+                if c["frm"] != "human":           # incoming, not our own echo
                     print(f"[{c['frm']}] {c['body']}")
             for t in store.transitions_after(last_tr):
                 last_tr = t["id"]
@@ -298,8 +327,9 @@ def repl(workspace_uuid: str, *, notify: bool = True) -> int:
 
     def message():
         w = max(20, _shutil.get_terminal_size((80, 24)).columns)
+        tag = f" #{st.thread}" if st.thread is not None else ""
         return FormattedText([("class:sep", "─" * w + "\n"),
-                              ("class:pr", f"decmux[{st.target}]> ")])
+                              ("class:pr", f"decmux[{st.target}{tag}]> ")])
 
     style = Style.from_dict({"sep": "fg:#666666", "pr": "bold"})
     psession: PromptSession = PromptSession(multiline=True, key_bindings=kb, style=style)

@@ -194,7 +194,7 @@ def cmd_task(args: argparse.Namespace) -> int:
         tid = store.add_task(kind=kind, body=text, to_whom=args.to,
                              source=args.source, author=args.author)
         store.add_chat(frm=args.author, dst=args.to, body=text,
-                       kind=("chat" if args.author == "you" else "report"))
+                       kind=("chat" if args.author in bus._HUMAN else "report"))
         store.commit()
         delivered = bus.deliver_task(store, store.get_task(tid))
         queued = store.task_pending_delivery_count(tid)
@@ -245,7 +245,7 @@ def cmd_task(args: argparse.Namespace) -> int:
     store.add_chat(frm=sender, dst="manager", body=body, kind="report")
     if (task.get("author") or "").strip().lower() in bus._HUMAN:
         # the asker gets answers/updates back in their REPL feed (human-facing chat)
-        store.add_chat(frm=sender, dst="you", body=body, kind="chat")
+        store.add_chat(frm=sender, dst="human", body=body, kind="chat")
     store.commit()
     print(f"task #{tid} {args.action}")
     return 0
@@ -500,7 +500,7 @@ def build_parser() -> argparse.ArgumentParser:
     pgo.add_argument("--workspace")
     pgo.set_defaults(func=cmd_goal)
 
-    psend = sub.add_parser("send", help="message manager/you/<agent>/all through decmux")
+    psend = sub.add_parser("send", help="message manager/human/<agent>/all through decmux")
     psend.add_argument("text", nargs="+")
     psend.add_argument("--to", default="manager")
     psend.add_argument("--frm", default=None)
@@ -514,7 +514,7 @@ def build_parser() -> argparse.ArgumentParser:
     pt.add_argument("id", nargs="?")
     pt.add_argument("text", nargs="*")
     pt.add_argument("--to", default="manager")
-    pt.add_argument("--author", default="you")
+    pt.add_argument("--author", default="human")
     pt.add_argument("--source", default="chat")
     pt.add_argument("--kind")
     pt.add_argument("--json", action="store_true")

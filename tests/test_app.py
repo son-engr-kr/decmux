@@ -99,6 +99,33 @@ def test_task_detail_shows_timeline(st, capsys):
     assert "the work" in out and "started analysis" in out and "timeline" in out
 
 
+def test_repl_opens_then_continues_thread(st):
+    assert app._handle(st, "is the build green?") is True
+    tid = st.thread
+    assert tid is not None                         # first manager message opens a thread
+    assert app._handle(st, "any update?") is True
+    assert st.thread == tid                        # same thread
+    comments = [c["body"] for c in st.store.task_comments(tid)]
+    assert "any update?" in comments               # continued as a comment
+    assert len(st.store.list_tasks()) == 1         # no second task created
+
+
+def test_repl_new_starts_fresh_thread(st):
+    app._handle(st, "q1")
+    first = st.thread
+    app._handle(st, "/new")
+    assert st.thread is None
+    app._handle(st, "q2")
+    assert st.thread is not None and st.thread != first
+    assert len(st.store.list_tasks()) == 2
+
+
+def test_repl_task_focuses_thread(st):
+    tid = st.store.add_task(kind="command", body="x", to_whom="manager")
+    app._handle(st, f"/task {tid}")
+    assert st.thread == tid
+
+
 def test_handle_task_and_tasks_closed(st):
     tid = st.store.add_task(kind="command", body="x")
     assert app._handle(st, f"/task {tid}") is True
@@ -117,7 +144,7 @@ def test_completions_carry_descriptions(st):
     words, meta = app._completions(st.store)
     assert "/status" in words and meta["/status"]          # command has a description
     assert "worker" in words and meta["worker"] == "agent"  # live agent name + meta
-    assert meta["manager"] and meta["you"]                  # targets described
+    assert meta["manager"] and meta["human"]                # targets described
 
 
 def test_repl_end_to_end_quit(tmp_path, monkeypatch):

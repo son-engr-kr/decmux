@@ -299,7 +299,7 @@ class Store:
 
     # --- task queue (chat commands/questions tracked like issues) ---
     def add_task(self, *, kind, body, to_whom="manager", source="chat",
-                 author="you", source_id="", status="open", now=None) -> int:
+                 author="human", source_id="", status="open", now=None) -> int:
         now = now if now is not None else time.time()
         if source_id:
             found = self.find_task_by_source_id(source_id)

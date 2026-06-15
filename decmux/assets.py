@@ -31,7 +31,7 @@ chat is manager-gated.
 Do NOT use raw `cmux send`. To message anyone:
 - `decmux send "<text>" --to manager` — report / ask the manager (the normal path
   for a subordinate agent).
-- `decmux send "<text>" --to you` — manager only; reaches the human as a concise,
+- `decmux send "<text>" --to human` — manager only; reaches the human as a concise,
   refined message. A subordinate using this is rerouted to the manager.
 - `decmux send "<text>" --to <agent>` — message a named agent.
 - `decmux send "<text>" --to all` — broadcast.
@@ -93,13 +93,13 @@ def _ensure_cmux_guard() -> Path:
     script = f"""#!/bin/sh
 case "$1" in
   send|send-key)
-    echo 'decmux guard: raw cmux input is disabled in decmux-managed agents. Use: decmux send "<text>" --to <manager|you|all|agent>' >&2
+    echo 'decmux guard: raw cmux input is disabled in decmux-managed agents. Use: decmux send "<text>" --to <manager|human|all|agent>' >&2
     exit 2
     ;;
   rpc)
     case "$2" in
       surface.send_key|surface.send_text|terminal.input|mobile.terminal.input|browser.input_keyboard|browser.input_mouse|browser.input_touch|browser.keydown|browser.keyup)
-        echo 'decmux guard: raw cmux input RPC is disabled in decmux-managed agents. Use: decmux send "<text>" --to <manager|you|all|agent>' >&2
+        echo 'decmux guard: raw cmux input RPC is disabled in decmux-managed agents. Use: decmux send "<text>" --to <manager|human|all|agent>' >&2
         exit 2
         ;;
     esac

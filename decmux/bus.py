@@ -106,14 +106,14 @@ def resolve_sender(store) -> str:
     try:
         sid = cmux.run_json("identify", "--id-format", "both", "--json")["caller"].get("surface_id")
     except (subprocess.CalledProcessError, OSError, KeyError):
-        return "you"
+        return "human"
     if sid:
         if store.is_manager(sid):   # a bound manager speaks as "manager"
             return "manager"
         a = store.agent_by_uuid(sid)
         if a and a.get("title"):
             return _clean_name(a["title"])
-    return "you"
+    return "human"
 
 
 def _targets(store, to: str) -> list[tuple[str, str, str]]:
@@ -200,7 +200,7 @@ def _gate_human_message(frm: str, to: str, text: str) -> tuple[str, str, bool]:
             f"{_SYS_SEP}\n"
             "A subordinate attempted to message the human directly. Review it, "
             "decide the next action, and forward a concise message with "
-            '`decmux send "<text>" --to you` only if the human is needed.'
+            '`decmux send "<text>" --to human` only if the human is needed.'
         ),
         True,
     )
@@ -255,7 +255,7 @@ def task_instructions(tid: int) -> str:
 
 def _task_card(task: dict, *, triage: bool = False, frm: str = "", goal: str = "") -> str:
     tid = task["id"]
-    author = frm or task.get("author") or "you"
+    author = frm or task.get("author") or "human"
     if triage or task.get("status") == "triage":
         return (
             f"[decmux triage #{tid} | from {author}]\n\n"
@@ -346,8 +346,21 @@ def task_update_instructions(task: dict) -> str:
     return "Actions:\n" + task_instructions(int(task["id"]))
 
 
+def _thread_brief(store, task: dict, limit: int = 5) -> str:
+    """A compact re-brief of a task thread (original request + recent timeline), so
+    a manager whose context has rolled past an old task is re-grounded inline —
+    decmux is the durable memory; we never replay the whole conversation."""
+    out = [f"Original request: {task['body']}"]
+    recent = store.task_comments(task["id"])[-limit:]
+    if recent:
+        out.append("recent in this thread:")
+        out += [f"  • {c['author']} [{c['kind']}]: {c['body'][:90]}" for c in recent]
+    return "\n".join(out)
+
+
 def deliver_task_update(store, task: dict, *, kind: str, body: str, author: str) -> dict:
-    """Deliver a task comment/progress update to the manager and task owner."""
+    """Deliver a task comment/progress update to the manager and task owner, with a
+    thread re-brief so the manager has context even for an old task."""
     targets = _task_update_targets(store, task)
     ws_ref = _ws_ref(store)
     message = (
@@ -357,14 +370,22 @@ def deliver_task_update(store, task: dict, *, kind: str, body: str, author: str)
         f"Status: {task.get('status') or 'unknown'}\n"
         f"Assignee: {(task.get('assignee') or 'none')}\n"
         f"{_goal_block(store.get_goal())}\n\n"
-        f"Original request:\n{task['body']}\n\n"
+        f"{_thread_brief(store, task)}\n\n"
         f"{task_update_instructions(task)}"
     )
     delivered, queued = _dispatch_body(store, targets, message, ws_ref, frm=author, task_id=None)
     return {"delivered": delivered, "queued": queued}
 
 
-def deliver_goal_update(store, goal: str, *, author: str = "you") -> dict:
+def continue_thread(store, tid: int, text: str, *, frm: str = "human") -> dict:
+    """A human follow-up on an existing task thread: record the comment and re-brief
+    the manager (the message carries the thread context, no full-history replay)."""
+    store.add_task_comment(tid, author=frm, kind="comment", body=text)
+    store.commit()
+    return deliver_task_update(store, store.get_task(tid), kind="comment", body=text, author=frm)
+
+
+def deliver_goal_update(store, goal: str, *, author: str = "human") -> dict:
     goal = goal.strip()
     assert goal, "goal text required"
     targets = _targets(store, "manager")
@@ -490,7 +511,7 @@ def send(store, text: str, to: str = "manager", frm: str | None = None,
     store.commit()
     if to.strip().lower() in _HUMAN:
         try:
-            cmux.run("notify", "--title", f"{frm} -> you", "--body", text[:150])
+            cmux.run("notify", "--title", f"{frm} -> human", "--body", text[:150])
         except (subprocess.CalledProcessError, OSError):
             pass
         return {"frm": frm, "dst": to, "requested_dst": requested_to,
