@@ -217,29 +217,32 @@ def _workspace_cwds() -> dict[str, str]:
 
 
 # An agent's "busy" spinner, matched structurally rather than by a fixed verb
-# list (Claude rotates dozens of gerunds — Thinking/Deciphering/Determining/
-# Cogitating… — and adds new ones per release, so an enumerated list silently
-# rots and flips a working agent to idle). The version-independent signals:
-#   - "esc to interrupt/cancel" hint shown while a turn is running;
-#   - a gerund + the ellipsis glyph "…" the spinner always uses ("Deciphering…");
-#   - the live token meter "↑/↓ <n>k tokens" (present only during generation).
-# A *completed* turn reads "Cogitated for 1m 51s" (past tense, no "…", no live
-# meter) and the idle "/clear to save 512.4k tokens" footer has no ↑/↓ arrow, so
-# neither trips these patterns.
-_BUSY = re.compile(
-    r"esc to (?:interrupt|cancel)"
-    r"|\b\w+ing…"
-    r"|[↑↓]\s*[\d.]+\s*k?\s*tokens",
-    re.IGNORECASE)
+# list (Claude rotates dozens of gerunds per release, so an enumerated list rots).
+# STRONG signals — present only while a turn is actively running, never in static
+# UI: the "esc to interrupt/cancel" hint and the live token meter "↑/↓ <n>k tokens".
+_BUSY_STRONG = re.compile(
+    r"esc to (?:interrupt|cancel)|[↑↓]\s*[\d.]+\s*k?\s*tokens", re.IGNORECASE)
+# The spinner gerund ("Deciphering…"). Weaker, so matched only on NON-boxed lines:
+# Claude's welcome / "What's new" / tips panels live inside `│` box borders and
+# contain gerunds like "credential caching…" that must NOT read as working.
+_BUSY_GERUND = re.compile(r"\b\w+ing…")
 
 
 def _screen_status(text: str) -> str | None:
     """Authoritative working/idle from the agent's screen — CPU is a poor proxy
-    (a thinking agent uses ~0% CPU; a background process trips a high CPU)."""
+    (a thinking agent uses ~0% CPU; a background process trips a high CPU).
+
+    A *completed* turn reads "Cogitated for 1m 51s" (past tense, no live meter) and
+    the idle "/clear to save 512.4k tokens" footer has no ↑/↓ arrow, so neither
+    reads as working."""
     if not text:
         return None
-    tail = "\n".join(text.splitlines()[-16:])
-    return "working" if _BUSY.search(tail) else "idle"
+    lines = text.splitlines()[-16:]
+    if _BUSY_STRONG.search("\n".join(lines)):
+        return "working"
+    if any("│" not in ln and _BUSY_GERUND.search(ln) for ln in lines):
+        return "working"
+    return "idle"
 
 
 def classify(cpu: float, procs: int, last_active: float | None, now: float,

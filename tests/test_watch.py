@@ -26,13 +26,25 @@ def test_classify_priority():
 
 def test_screen_status_structural_spinner():
     assert _screen_status("... esc to interrupt") == "working"
-    assert _screen_status("Deciphering…") == "working"          # gerund + ellipsis
+    assert _screen_status("✶ Deciphering…") == "working"        # bare gerund spinner
     assert _screen_status("↑ 12k tokens") == "working"          # live token meter
     # a completed turn is past-tense, no ellipsis, no live meter -> idle
     assert _screen_status("Cogitated for 1m 51s") == "idle"
     # idle footer mentions tokens but has no ↑/↓ arrow -> idle
     assert _screen_status("/clear to save 512.4k tokens") == "idle"
     assert _screen_status("") is None
+
+
+def test_screen_status_ignores_boxed_welcome_gerund():
+    # Claude's welcome/changelog panel lives in a box and contains gerunds like
+    # "caching…"; a freshly-spawned idle agent must NOT read as working.
+    welcome = (
+        "│ What's new                                  │\n"
+        "│ Improved Bedrock credential caching…        │\n"
+        "❯\n"
+        "  Opus 4.8 (1M context) [xhigh]"
+    )
+    assert _screen_status(welcome) == "idle"
 
 
 def test_runtime_shell_vs_login_shell():
