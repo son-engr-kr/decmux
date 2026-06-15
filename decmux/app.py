@@ -176,6 +176,19 @@ def _feed_poller(st: AppState) -> None:
         time.sleep(1.5)
 
 
+def _startup_guide(store) -> None:
+    """When there's no team yet, show the concrete first steps instead of a blank prompt."""
+    if store.manager() or store.managed_set():
+        return
+    print(
+        "\nNo agents yet — build a team in OTHER cmux surfaces:\n"
+        "  manager:  open a surface, run   decmux agent --manager\n"
+        "  worker :  open a surface, run   decmux agent        (or: decmux spawn --name <role>)\n"
+        "then, here:  /goal <text>  to set the objective, then type to message the manager.\n"
+        "(/help for all commands)\n"
+    )
+
+
 def _toolbar(st: AppState) -> str:
     counts = Counter(a["state"] for a in st.store.list_agents())
     parts = "  ".join(f"{_GLYPH.get(s, '·')}{n}" for s, n in counts.items()) or "no agents"
@@ -202,6 +215,7 @@ def repl(workspace_uuid: str, *, notify: bool = True) -> int:
     threading.Thread(target=_feed_poller, args=(st,), daemon=True).start()
     psession: PromptSession = PromptSession()
     print(f"decmux — workspace {workspace_uuid}. supervising in the background. /help · /quit")
+    _startup_guide(st.store)
     try:
         with patch_stdout():
             while True:

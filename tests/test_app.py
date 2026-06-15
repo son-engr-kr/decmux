@@ -51,6 +51,17 @@ def test_truly_unknown_command(st, capsys):
     assert "unknown command: /bogus" in capsys.readouterr().out
 
 
+def test_startup_guide_when_cold(st, capsys):
+    app._startup_guide(st.store)                       # no manager, no managed agents
+    assert "decmux agent --manager" in capsys.readouterr().out
+
+
+def test_startup_guide_silent_with_team(st, capsys):
+    st.store.mark_managed("u1")
+    app._startup_guide(st.store)
+    assert capsys.readouterr().out == ""               # team exists -> no guide
+
+
 def test_blank_line_is_noop(st):
     assert app._handle(st, "   ") is True
 
