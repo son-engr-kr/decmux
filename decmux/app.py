@@ -122,9 +122,12 @@ def _handle(st: AppState, line: str) -> bool:
             return False
         if cmd == "help":
             print(HELP)
-        elif cmd == "to" and rest:
-            st.target = rest
-            print(f"target -> {st.target}")
+        elif cmd == "to":
+            if not rest:
+                print("usage: /to <manager | you | all | agent>")
+            else:
+                st.target = rest
+                print(f"target -> {st.target}")
         elif cmd == "status":
             _status(st.store)
         elif cmd == "tasks":
@@ -133,11 +136,14 @@ def _handle(st: AppState, line: str) -> bool:
             _feed(st.store, _int(rest, 20))
         elif cmd == "report":
             _report(st.store, _int(rest, 20))
-        elif cmd == "goal" and rest:
-            res = bus.send(st.store, "/goal " + rest, to="manager", frm="you")
-            print(f"goal set (delivered {res.get('delivered', 0)}, queued {res.get('queued', 0)})")
+        elif cmd == "goal":
+            if not rest:
+                print("usage: /goal <text>")
+            else:
+                res = bus.send(st.store, "/goal " + rest, to="manager", frm="you")
+                print(f"goal set (delivered {res.get('delivered', 0)}, queued {res.get('queued', 0)})")
         else:
-            print("unknown command; /help")
+            print(f"unknown command: /{cmd}  (try /help)")
         return True
     res = bus.send(st.store, line, to=st.target, frm="you")
     if res.get("withheld_status"):

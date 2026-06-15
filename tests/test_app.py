@@ -36,6 +36,21 @@ def test_slash_goal_persists(st):
     assert st.store.get_goal() == "ship v1"
 
 
+def test_known_command_without_arg_shows_usage(st, capsys):
+    # `/goal` and `/to` are known: missing arg -> usage, not "unknown command"
+    assert app._handle(st, "/goal") is True
+    out = capsys.readouterr().out
+    assert "usage: /goal" in out and "unknown" not in out
+    assert st.store.get_goal() == ""          # nothing set
+    assert app._handle(st, "/to") is True
+    assert "usage: /to" in capsys.readouterr().out
+
+
+def test_truly_unknown_command(st, capsys):
+    assert app._handle(st, "/bogus") is True
+    assert "unknown command: /bogus" in capsys.readouterr().out
+
+
 def test_blank_line_is_noop(st):
     assert app._handle(st, "   ") is True
 
