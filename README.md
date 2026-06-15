@@ -88,9 +88,11 @@ global artifacts are the `SessionStart` hook in `~/.claude/settings.json` and th
 on-demand cmux-send guard in `~/.local/share/decmux/bin/`.
 
 ```sh
+decmux teardown           # one shot: global hook + guard + ALL data + the command
+
+# or piecemeal:
 decmux setup --remove     # remove the global SessionStart hook from ~/.claude
-decmux purge              # delete this workspace's data
-decmux purge --all        # delete all workspaces' data
+decmux purge              # delete this workspace's data   (--all for every workspace)
 uv tool uninstall decmux  # remove the command itself
 ```
 

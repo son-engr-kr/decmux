@@ -60,6 +60,21 @@ def test_setup_remove(sandbox):
     assert hooks.claude_status()["session_start_hook"] is False
 
 
+def test_teardown_removes_everything(sandbox, monkeypatch, tmp_path):
+    state = tmp_path / "state"
+    monkeypatch.setenv("DECMUX_STATE_DIR", str(state))
+    cli.main(["setup"])                 # global hook
+    assets._ensure_cmux_guard()         # guard (sandbox GUARD_DIR = tmp/bin)
+    Store("ws-a", root=state)           # data
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: calls.append(list(a[0])))
+    cli.main(["teardown", "--yes"])
+    assert hooks.claude_status()["session_start_hook"] is False   # hook removed
+    assert not (sandbox / "bin").exists()                          # guard removed
+    assert not state.exists()                                      # data removed
+    assert calls and calls[0][:3] == ["uv", "tool", "uninstall"]   # command uninstall invoked
+
+
 # --- protocol injection is scoped to decmux sessions ---
 
 def test_injects_for_spawned_agent(sandbox, monkeypatch, capsys):

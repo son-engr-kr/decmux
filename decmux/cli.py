@@ -412,6 +412,32 @@ def _setup_hint() -> None:
               "(installs a Claude SessionStart hook).")
 
 
+def cmd_teardown(args: argparse.Namespace) -> int:
+    """Remove decmux entirely: global hook + cmux guard + ALL data + the command."""
+    root = store_mod._root()
+    print("decmux teardown will remove:")
+    print("  • the global Claude SessionStart hook (~/.claude/settings.json)")
+    print(f"  • the cmux guard ({assets.GUARD_DIR})")
+    print(f"  • ALL workspace data ({root})")
+    print("  • the decmux command (uv tool uninstall decmux)")
+    if not args.yes:
+        if input("proceed? [y/N] ").strip().lower() != "y":
+            print("aborted")
+            return 0
+    hooks.remove_session_hook()
+    if assets.GUARD_DIR.exists():
+        shutil.rmtree(assets.GUARD_DIR)
+    if root.exists():
+        shutil.rmtree(root)
+    print("removed hook + guard + data; uninstalling the command…")
+    try:
+        subprocess.run(["uv", "tool", "uninstall", "decmux"], check=False)
+    except (FileNotFoundError, OSError) as e:
+        print(f"  could not run uv ({e}); finish with: uv tool uninstall decmux")
+    print("decmux removed.")
+    return 0
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     """Install (or --remove) the global Claude SessionStart hook that injects the
     decmux protocol into decmux-managed sessions (no skill file). The cmux guard is
@@ -552,6 +578,10 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--all", action="store_true", help="delete data for every workspace")
     pp.add_argument("--workspace")
     pp.set_defaults(func=cmd_purge)
+
+    ptd = sub.add_parser("teardown", help="remove decmux entirely: hook + guard + ALL data + the command")
+    ptd.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    ptd.set_defaults(func=cmd_teardown)
 
     return p
 
