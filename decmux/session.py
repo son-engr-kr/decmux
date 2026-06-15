@@ -233,6 +233,8 @@ class Session:
         # so a bare `claude` or your own driver session is never watched or poked.
         managed = self.store.managed_set()
         rows = [r for r in rows if r.surface.key in managed]
+        if rows and rows[0].workspace_cwd:        # workspace dir, for `/status`
+            self.store.set_meta("cwd", rows[0].workspace_cwd)
         present: set[str] = set()
         for r in rows:
             key = r.surface.key

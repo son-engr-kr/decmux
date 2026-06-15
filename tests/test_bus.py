@@ -135,11 +135,15 @@ def fake_cmux(monkeypatch, tmp_path):
     monkeypatch.setattr(assets, "GUARD_CMUX", tmp_path / "bin" / "cmux")
 
     def run(*a):
-        return "surface:5 (AAAA-5)\n" if a and a[0] == "new-surface" else ""
+        return "OK surface:5 pane:7 workspace:1\n" if a and a[0] == "new-pane" else ""
+
+    def run_json(*a):
+        if a and a[0] == "identify":
+            return {"caller": {"surface_id": "AAAA-5", "window_ref": "window:1"}}
+        return {"workspaces": [{"id": "ws-test", "ref": "workspace:1",
+                                "current_directory": "/x"}]}
     monkeypatch.setattr(cmux, "run", run)
-    monkeypatch.setattr(cmux, "run_json",
-                        lambda *a: {"workspaces": [{"id": "ws-test", "ref": "workspace:1",
-                                                    "current_directory": "/x"}]})
+    monkeypatch.setattr(cmux, "run_json", run_json)
 
 
 def test_spawn_agent_marks_managed(s, fake_cmux):

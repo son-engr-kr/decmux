@@ -91,9 +91,22 @@ def _status(store) -> None:
     if not agents:
         print("  (no agents in this workspace)")
         return
+    kinds = store.managed_kinds()
+    cwd, u = store.get_meta("cwd"), store.usage()
+    head = []
+    if cwd:
+        head.append(f"dir {cwd}")
+    if u.get("turns") or u.get("tools"):
+        head.append(f"usage {u.get('turns') or 0} turns / {u.get('tools') or 0} tools")
+    if head:
+        print("  " + "   ·   ".join(head))
     for a in agents:
         bk = f"·{a['busy_kind']}" if a.get("busy_kind") else ""
-        print(f"  {(a['state'] or '?') + bk:18} {bus._clean_name(a['title']):24} {a['surface_ref']}")
+        kind = kinds.get(a["surface_uuid"], "")
+        model = a.get("model") or ""
+        eff = f" [{a['effort']}]" if a.get("effort") else ""
+        print(f"  {(a['state'] or '?') + bk:16} {bus._clean_name(a['title']):18} "
+              f"{a['surface_ref']:11} {kind:7} {model}{eff}")
 
 
 def _tasks(store) -> None:

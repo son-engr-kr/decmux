@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS chat (
     ts REAL, frm TEXT, dst TEXT, body TEXT, kind TEXT
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT, updated_at REAL);
-CREATE TABLE IF NOT EXISTS managed (surface_uuid TEXT PRIMARY KEY, role TEXT, ts REAL);
+CREATE TABLE IF NOT EXISTS managed (surface_uuid TEXT PRIMARY KEY, role TEXT, kind TEXT, ts REAL);
 CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, kind TEXT, body TEXT, to_whom TEXT,
     status TEXT, progress TEXT, result TEXT, updated_at REAL,
@@ -106,7 +106,15 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA busy_timeout=3000")
         self.db.executescript(SCHEMA)
+        self._migrate()
         self.db.commit()
+
+    def _migrate(self) -> None:
+        """Additive column migrations for stores created before a column existed."""
+        for table, col, decl in [("managed", "kind", "TEXT")]:
+            have = {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}
+            if col not in have:
+                self.db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
     # --- meta (singletons: goal, applied flag) ---
     def set_meta(self, key: str, value: str, now=None) -> None:
@@ -127,16 +135,21 @@ class Store:
         return self.get_meta("goal", "")
 
     # --- managed surfaces (decmux only supervises surfaces it onboarded) ---
-    def mark_managed(self, surface_uuid: str, role: str = "agent", now=None) -> None:
+    def mark_managed(self, surface_uuid: str, role: str = "agent",
+                     kind: str = "claude", now=None) -> None:
         self.db.execute(
-            "INSERT OR REPLACE INTO managed (surface_uuid, role, ts) VALUES (?,?,?)",
-            (surface_uuid, role, now if now is not None else time.time()))
+            "INSERT OR REPLACE INTO managed (surface_uuid, role, kind, ts) VALUES (?,?,?,?)",
+            (surface_uuid, role, kind, now if now is not None else time.time()))
 
     def unmark_managed(self, surface_uuid: str) -> None:
         self.db.execute("DELETE FROM managed WHERE surface_uuid=?", (surface_uuid,))
 
     def managed_set(self) -> set[str]:
         return {r["surface_uuid"] for r in self.db.execute("SELECT surface_uuid FROM managed")}
+
+    def managed_kinds(self) -> dict[str, str]:
+        return {r["surface_uuid"]: (r["kind"] or "")
+                for r in self.db.execute("SELECT surface_uuid, kind FROM managed")}
 
     def is_managed(self, surface_uuid: str) -> bool:
         return bool(self.db.execute(

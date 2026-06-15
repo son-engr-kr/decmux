@@ -37,12 +37,13 @@ def _store(args: argparse.Namespace | None = None) -> Store:
 
 
 # --- status rendering ---
-def _row_to_dict(r: watch.Row) -> dict:
+def _row_to_dict(r: watch.Row, kinds: dict | None = None) -> dict:
     return {
         "surface": r.surface.ref, "uuid": r.surface.uuid,
         "name": bus._clean_name(r.surface.title), "state": r.state,
+        "kind": (kinds or {}).get(r.surface.uuid, ""),
         "busy_kind": r.busy_kind, "model": r.model, "effort": r.effort,
-        "quiet_for": round(r.quiet_for or 0.0, 1),
+        "cwd": r.workspace_cwd, "quiet_for": round(r.quiet_for or 0.0, 1),
     }
 
 
@@ -50,16 +51,18 @@ _GLYPH = {"working": "●", "idle": "○", "stuck": "▲", "error": "✖",
           "dead": "☠", "budget": "$", "blocked-on-decision": "?"}
 
 
-def _render(rows: list[watch.Row]) -> str:
+def _render(rows: list[watch.Row], kinds: dict | None = None) -> str:
     if not rows:
         return "(no agents in this workspace)"
+    kinds = kinds or {}
     out = []
     for r in rows:
         g = _GLYPH.get(r.state, "·")
-        kind = f"·{r.busy_kind}" if r.state == "working" and r.busy_kind else ""
-        model = f"  {r.model}" if r.model else ""
-        out.append(f"  {g} {r.state + kind:18} {bus._clean_name(r.surface.title):24}"
-                   f" {r.surface.ref:11}{model}")
+        bk = f"·{r.busy_kind}" if r.state == "working" and r.busy_kind else ""
+        k = kinds.get(r.surface.uuid, "")
+        eff = f" [{r.effort}]" if r.effort else ""
+        out.append(f"  {g} {r.state + bk:16} {bus._clean_name(r.surface.title):18} "
+                   f"{r.surface.ref:11} {k:7} {r.model or ''}{eff}")
     return "\n".join(out)
 
 
@@ -78,19 +81,37 @@ def cmd_status(args: argparse.Namespace) -> int:
                 r.busy_kind = bk.get(r.surface.uuid, "") or ""
         return rows
 
+    kinds = store.managed_kinds()
+
+    def header(rows: list[watch.Row]) -> str:
+        cwd = (rows[0].workspace_cwd if rows else "") or store.get_meta("cwd")
+        u = store.usage()
+        parts = []
+        if cwd:
+            parts.append(f"dir {cwd}")
+        if u.get("turns") or u.get("tools"):
+            parts.append(f"usage {u.get('turns') or 0} turns / {u.get('tools') or 0} tools")
+        return "   ·   ".join(parts)
+
     if args.json:
-        print(json.dumps([_row_to_dict(r) for r in poll()], indent=2, ensure_ascii=False))
+        print(json.dumps([_row_to_dict(r, kinds) for r in poll()], indent=2, ensure_ascii=False))
         return 0
     if args.watch:
         try:
             while True:
+                rows = poll()
                 sys.stdout.write("\033[2J\033[H")
-                print(f"decmux status — {time.strftime('%H:%M:%S')} (ctrl-c to stop)\n")
-                print(_render(poll()))
+                print(f"decmux status — {time.strftime('%H:%M:%S')} (ctrl-c to stop)")
+                print(header(rows) + "\n")
+                print(_render(rows, kinds))
                 time.sleep(args.interval)
         except KeyboardInterrupt:
             return 0
-    print(_render(poll()))
+    rows = poll()
+    h = header(rows)
+    if h:
+        print(h)
+    print(_render(rows, kinds))
     return 0
 
 
@@ -339,7 +360,7 @@ def cmd_agent(args: argparse.Namespace) -> int:
         store.commit()
     if args.name:
         cmux.run("rename-tab", "--workspace", c["workspace_ref"], "--surface", c["surface_ref"], args.name)
-    store.mark_managed(c["surface_id"], role=role)
+    store.mark_managed(c["surface_id"], role=role, kind=args.kind)
     if args.kind == "codex":          # claude gets the protocol via the SessionStart hook
         bus.deliver_protocol(store, c["surface_id"], c["surface_ref"])
     store.commit()
