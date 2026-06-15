@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from decmux import bus
+from decmux import assets, bus
 from decmux.store import Store
 
 
@@ -126,6 +126,14 @@ def test_send_force_overrides_withhold(s, recorder):
 
 
 # --- send: human-gate reroute ---
+
+def test_deliver_protocol_queues(s):
+    # onboarding a codex agent queues the full protocol once (de-mixed)
+    oid = bus.deliver_protocol(s, "u1", "surface:1")
+    assert oid > 0
+    pending = s.pending_outbox("u1")
+    assert pending and pending[0]["body"] == assets.PROTOCOL
+
 
 def test_send_human_gate_reroutes_to_manager(s, recorder):
     add_agent(s, uuid="m1", ref="surface:9", name="manager", state="idle")

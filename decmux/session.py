@@ -229,6 +229,10 @@ class Session:
         if not self.ws_ref:
             self.ws_ref = bus._ws_ref(self.store)
         rows = self.watcher.poll(now, shell_ppids=self.shell_tracker.active_ppids(now))
+        # B-scope: supervise only surfaces decmux onboarded (spawn/agent/register),
+        # so a bare `claude` or your own driver session is never watched or poked.
+        managed = self.store.managed_set()
+        rows = [r for r in rows if r.surface.key in managed]
         present: set[str] = set()
         for r in rows:
             key = r.surface.key

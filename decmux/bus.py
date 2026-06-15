@@ -12,7 +12,7 @@ import re
 import subprocess
 import time
 
-from . import cmux
+from . import assets, cmux
 
 _HUMAN = {"you", "user", "me", "human"}
 _ALL = {"all", "everyone", "broadcast"}
@@ -72,12 +72,6 @@ def _is_downward(frm: str, to: str) -> bool:
     """A manager message aimed at subordinate agent(s) — a named agent or broadcast."""
     return (frm.strip().lower() == "manager"
             and to.strip().lower() not in _HUMAN | {"manager"})
-
-
-SKILL_MSG = (
-    'decmux protocol: subordinate agents report with `decmux send "<text>" '
-    '--to manager`; only the manager sends refined messages `--to you`.'
-)
 
 
 def _ws_refs() -> dict[str, str]:
@@ -538,18 +532,11 @@ def flush_outbox(store, surface_uuid: str, surface_ref: str, ws_ref: str,
     return len(sent_ids)
 
 
-def apply_skill(store, *, force: bool = False) -> dict:
-    """Onboard this workspace's agents to route through decmux (once, unless forced)."""
-    if not force and store.is_applied():
-        return {"agents": 0, "applied": False}
-    ws_ref = _ws_ref(store)
-    agents = 0
-    for a in store.list_agents():
-        try:
-            _deliver(a["surface_ref"], ws_ref, SKILL_MSG)
-            agents += 1
-        except (subprocess.CalledProcessError, OSError):
-            pass
-    store.mark_applied()
-    store.commit()
-    return {"agents": agents, "applied": True}
+def deliver_protocol(store, surface_uuid: str, surface_ref: str) -> int:
+    """Onboard a non-Claude agent (e.g. codex) by queuing the decmux protocol once.
+
+    Claude agents receive the protocol via the SessionStart hook; this is the
+    equivalent channel for agents without that mechanism. Queued to the outbox so
+    it lands de-mixed when the agent is idle."""
+    return store.enqueue_outbox(surface_uuid=surface_uuid, surface_ref=surface_ref,
+                                body=assets.PROTOCOL, frm="decmux")

@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from decmux import bus, cmux, session
+from decmux import bus, cmux, session, watch
 from decmux.config import WorkspaceConfig
 from decmux.store import Store
 
@@ -71,3 +71,23 @@ def test_non_alert_state_is_noop(wired):
     sess._health_step("a1", "working", "worker", now=100)
     sess._health_step("a1", "idle", "worker", now=200)
     assert delivers == [] and notifies == []
+
+
+def _row(uuid, ref, state="idle"):
+    s = watch.Surface(ref=ref, uuid=uuid, pane="p", workspace="w", workspace_uuid="ws",
+                      title="t", cpu=0.0, mem=0, procs=1)
+    return watch.Row(surface=s, state=state, ws_name="w", ws_agent_tag=None, quiet_for=1.0)
+
+
+def test_tick_only_manages_onboarded(tmp_path, monkeypatch):
+    """B-scope: tick supervises only surfaces in the managed registry."""
+    monkeypatch.setattr(bus, "_ws_ref", lambda store: "")
+    store = Store("ws", root=tmp_path)
+    store.mark_managed("u-managed")
+    store.commit()
+    sess = session.Session("ws", store=store, notify=False)
+    monkeypatch.setattr(sess.watcher, "poll",
+                        lambda *a, **k: [_row("u-managed", "surface:1"),
+                                         _row("u-bare", "surface:2")])
+    sess.tick(now=100.0)
+    assert {a["surface_uuid"] for a in store.list_agents()} == {"u-managed"}

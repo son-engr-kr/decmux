@@ -72,6 +72,9 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     def poll() -> list[watch.Row]:
         rows = watcher.poll()
+        if not args.all:                    # default: only surfaces decmux manages
+            managed = store.managed_set()
+            rows = [r for r in rows if r.surface.uuid in managed]
         bk = store.busy_kind_by_surface()   # overlay the session's last-known shell/llm
         for r in rows:
             if not r.busy_kind:
@@ -116,6 +119,7 @@ def cmd_register(args: argparse.Namespace) -> int:
             new_surface_uuid=c["surface_id"], new_surface_ref=c["surface_ref"])
         bus.deliver_manager_backlog(
             store, reason="Manager was changed; open manager tasks were requeued.")
+    store.mark_managed(c["surface_id"], role="manager")
     store.commit()
     print(f"registered manager: {c['surface_ref']} @ {c['workspace_ref']}")
     return 0
@@ -239,11 +243,6 @@ def cmd_note(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_apply(args: argparse.Namespace) -> int:
-    print(bus.apply_skill(_store(args), force=args.force))
-    return 0
-
-
 def cmd_decisions(args: argparse.Namespace) -> int:
     rows = _store(args).list_decisions(args.status)
     if args.json:
@@ -315,6 +314,8 @@ def cmd_spawn(args: argparse.Namespace) -> int:
     sref, suuid = m.group(1), m.group(2)
     name = args.name or ("manager" if args.manager else "agent")
     cmux.run("rename-tab", "--workspace", ws_ref, "--surface", sref, name)
+    store.mark_managed(suuid, role=("manager" if args.manager else "agent"))
+    store.commit()
     cmd = args.command or AGENT_CMD.get(args.kind or "claude", AGENT_CMD["claude"])
     cmd = assets.guarded_command(cmd, env={
         "CMUX_WORKSPACE_ID": ws_uuid, "CMUX_WORKSPACE_REF": ws_ref,
@@ -323,9 +324,11 @@ def cmd_spawn(args: argparse.Namespace) -> int:
     }, cwd=cwd or None)
     cmux.run("send", "--workspace", ws_ref, "--surface", sref, cmd)
     cmux.run("send-key", "--workspace", ws_ref, "--surface", sref, "Enter")
+    if args.kind == "codex":          # claude gets the protocol via the SessionStart hook
+        bus.deliver_protocol(store, suuid, sref)
     if args.manager:
         store.bind_manager(surface_uuid=suuid, surface_ref=sref, cwd=cwd)
-        store.commit()
+    store.commit()
     print(f"spawned {name}: {sref} @ {ws_ref}" + (" (manager)" if args.manager else ""))
     return 0
 
@@ -364,18 +367,14 @@ def cmd_agent(args: argparse.Namespace) -> int:
         store.commit()
     if args.name:
         cmux.run("rename-tab", "--workspace", c["workspace_ref"], "--surface", c["surface_ref"], args.name)
+    store.mark_managed(c["surface_id"], role=role)
+    if args.kind == "codex":          # claude gets the protocol via the SessionStart hook
+        bus.deliver_protocol(store, c["surface_id"], c["surface_ref"])
+    store.commit()
     guard_dir = assets._ensure_cmux_guard()
     argv, env = _agent_launch(caller=c, role=role, kind=args.kind, command=args.command,
                               guard_dir=str(guard_dir), real_cmux=cmux.CMUX_BIN)
     os.execvpe(argv[0], argv, env)   # replaces this process with the agent
-
-
-def cmd_hooks(args: argparse.Namespace) -> int:
-    if args.action == "install":
-        print(json.dumps(hooks.install_all_hooks(), indent=2))
-    else:
-        print(json.dumps(hooks.claude_status(), indent=2))
-    return 0
 
 
 def cmd_session_start(args: argparse.Namespace) -> int:
@@ -459,6 +458,7 @@ def build_parser() -> argparse.ArgumentParser:
     ps = sub.add_parser("status", help="classify and show this workspace's agents")
     ps.add_argument("--json", action="store_true")
     ps.add_argument("--watch", action="store_true")
+    ps.add_argument("--all", action="store_true", help="include surfaces decmux isn't managing")
     ps.add_argument("--interval", type=float, default=2.0)
     ps.add_argument("--workspace")
     ps.set_defaults(func=cmd_status)
@@ -504,11 +504,6 @@ def build_parser() -> argparse.ArgumentParser:
     pn.add_argument("--workspace")
     pn.set_defaults(func=cmd_note)
 
-    pa = sub.add_parser("apply", help="onboard this workspace's agents to route through decmux")
-    pa.add_argument("--force", action="store_true")
-    pa.add_argument("--workspace")
-    pa.set_defaults(func=cmd_apply)
-
     pd = sub.add_parser("decisions", help="list Feed decisions + disposition")
     pd.add_argument("--status")
     pd.add_argument("--json", action="store_true")
@@ -542,14 +537,10 @@ def build_parser() -> argparse.ArgumentParser:
     psp.add_argument("--workspace")
     psp.set_defaults(func=cmd_spawn)
 
-    sub.add_parser("setup", help="install the skill + cmux guard + Claude SessionStart hook") \
+    sub.add_parser("setup", help="install the Claude SessionStart protocol hook") \
         .set_defaults(func=cmd_setup)
 
-    ph = sub.add_parser("hooks", help="install/status the Claude Code SessionStart hook")
-    ph.add_argument("action", choices=["install", "status"], nargs="?", default="status")
-    ph.set_defaults(func=cmd_hooks)
-
-    sub.add_parser("session-start", help="(Claude SessionStart hook) refresh + reload skill") \
+    sub.add_parser("session-start", help="(internal) Claude SessionStart hook entry") \
         .set_defaults(func=cmd_session_start)
 
     pp = sub.add_parser("purge", help="delete decmux's stored data (this workspace, or --all)")

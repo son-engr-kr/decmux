@@ -99,6 +99,17 @@ def test_model_effort_sticky(tmp_path):
     assert row["state"] == "idle"
 
 
+def test_managed_registry(tmp_path):
+    s = mk(tmp_path)
+    assert s.managed_set() == set()
+    s.mark_managed("u1", role="manager")
+    s.mark_managed("u2")
+    assert s.managed_set() == {"u1", "u2"}
+    assert s.is_managed("u1") and not s.is_managed("u3")
+    s.unmark_managed("u2")
+    assert s.managed_set() == {"u1"}
+
+
 def test_goal_roundtrip(tmp_path):
     s = mk(tmp_path)
     assert s.get_goal() == ""

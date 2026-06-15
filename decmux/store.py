@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS chat (
     ts REAL, frm TEXT, dst TEXT, body TEXT, kind TEXT
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT, updated_at REAL);
+CREATE TABLE IF NOT EXISTS managed (surface_uuid TEXT PRIMARY KEY, role TEXT, ts REAL);
 CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, kind TEXT, body TEXT, to_whom TEXT,
     status TEXT, progress TEXT, result TEXT, updated_at REAL,
@@ -125,11 +126,21 @@ class Store:
     def get_goal(self) -> str:
         return self.get_meta("goal", "")
 
-    def mark_applied(self, now=None) -> None:
-        self.set_meta("applied", "1", now=now)
+    # --- managed surfaces (decmux only supervises surfaces it onboarded) ---
+    def mark_managed(self, surface_uuid: str, role: str = "agent", now=None) -> None:
+        self.db.execute(
+            "INSERT OR REPLACE INTO managed (surface_uuid, role, ts) VALUES (?,?,?)",
+            (surface_uuid, role, now if now is not None else time.time()))
 
-    def is_applied(self) -> bool:
-        return self.get_meta("applied") == "1"
+    def unmark_managed(self, surface_uuid: str) -> None:
+        self.db.execute("DELETE FROM managed WHERE surface_uuid=?", (surface_uuid,))
+
+    def managed_set(self) -> set[str]:
+        return {r["surface_uuid"] for r in self.db.execute("SELECT surface_uuid FROM managed")}
+
+    def is_managed(self, surface_uuid: str) -> bool:
+        return bool(self.db.execute(
+            "SELECT 1 FROM managed WHERE surface_uuid=?", (surface_uuid,)).fetchone())
 
     # --- agent state ---
     def last_states(self) -> dict[str, str]:
