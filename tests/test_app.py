@@ -79,6 +79,33 @@ def test_blank_line_is_noop(st):
     assert app._handle(st, "   ") is True
 
 
+def test_tasks_split_open_closed(st, capsys):
+    st.store.add_task(kind="command", body="open one", to_whom="manager")
+    done = st.store.add_task(kind="command", body="done one", to_whom="manager")
+    st.store.close_task(done, "finished", "done")
+    app._tasks(st.store, closed=False)
+    out = capsys.readouterr().out
+    assert "open one" in out and "done one" not in out
+    app._tasks(st.store, closed=True)
+    out = capsys.readouterr().out
+    assert "done one" in out and "finished" in out
+
+
+def test_task_detail_shows_timeline(st, capsys):
+    tid = st.store.add_task(kind="command", body="the work", to_whom="worker")
+    st.store.task_progress(tid, "started analysis", author="worker")
+    app._task_detail(st.store, tid)
+    out = capsys.readouterr().out
+    assert "the work" in out and "started analysis" in out and "timeline" in out
+
+
+def test_handle_task_and_tasks_closed(st):
+    tid = st.store.add_task(kind="command", body="x")
+    assert app._handle(st, f"/task {tid}") is True
+    assert app._handle(st, "/task") is True            # usage, no crash
+    assert app._handle(st, "/tasks closed") is True
+
+
 def test_toolbar_renders(st):
     st.store.upsert_state(surface_uuid="a", surface_ref="surface:1", title="w", state="idle")
     bar = app._toolbar(st)

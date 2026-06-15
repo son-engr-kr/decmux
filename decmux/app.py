@@ -21,7 +21,7 @@ from . import session as session_mod
 from .store import Store
 
 _COMMANDS = ["/spawn-manager", "/spawn", "/goal", "/to", "/status", "/tasks",
-             "/feed", "/report", "/help", "/quit"]
+             "/task", "/feed", "/report", "/help", "/quit"]
 _TARGETS = ["manager", "you", "all"]
 
 # shown beside each completion (prompt_toolkit display_meta) when it is focused
@@ -31,7 +31,8 @@ _CMD_META = {
     "/goal": "set the workspace goal (briefs the manager)",
     "/to": "set message target (manager | you | <agent> | all)",
     "/status": "agent states (from the supervisor)",
-    "/tasks": "open tasks",
+    "/tasks": "open tasks  (/tasks closed for finished)",
+    "/task": "one task's detail + timeline  (/task <id>)",
     "/feed": "recent human-facing chat  (/feed N)",
     "/report": "recent state transitions  (/report N)",
     "/help": "list commands",
@@ -53,14 +54,15 @@ def _completions(store) -> tuple[list[str], dict[str, str]]:
         meta.setdefault(n, "agent")
     return words, meta
 
-HELP = """commands:
+HELP = """commands:  (Enter sends · Alt+Enter for a newline)
   <text>            send to the current target (default: manager)
   /spawn-manager    create the manager in a new surface
-  /spawn [name]     add a worker agent in a new surface
+  /spawn [name]     add a worker agent (joins the manager's pane as a tab)
   /goal <text>      set the workspace goal (briefs the manager)
   /to <name>        set target (manager | you | <agent> | all)
   /status           agent states (from the supervisor)
-  /tasks            open tasks
+  /tasks [closed]   open tasks (or finished ones)
+  /task <id>        one task's detail + timeline
   /feed [n]         recent human-facing chat
   /report [n]       recent state transitions
   /help  /quit"""
@@ -109,13 +111,45 @@ def _status(store) -> None:
               f"{a['surface_ref']:11} {kind:7} {model}{eff}")
 
 
-def _tasks(store) -> None:
-    rows = store.open_tasks()
+_CLOSED = {"done", "answered"}
+
+
+def _tasks(store, closed: bool = False) -> None:
+    rows = [t for t in store.list_tasks() if (t["status"] in _CLOSED) == closed]
     if not rows:
-        print("  (no open tasks)")
+        print("  (no closed tasks)" if closed else "  (no open tasks — /tasks closed for finished)")
         return
+    print(f"  {'closed' if closed else 'open'} tasks:")
     for t in rows:
-        print(f"  #{t['id']} [{t['status']}] -> {t['to_whom']}: {t['body'][:70]}")
+        who = f" @{t['assignee']}" if t.get("assignee") else ""
+        if closed:
+            tail = f"  => {(t['result'] or '').strip()[:44]}" if t.get("result") else ""
+            print(f"  #{t['id']} [{t['status']}]{who} {t['body'][:46]}{tail}")
+        else:
+            prog = [ln for ln in (t.get("progress") or "").splitlines() if ln.strip()]
+            last = f"   · {prog[-1].lstrip('• ')[:46]}" if prog else ""
+            print(f"  #{t['id']} [{t['status']}]{who} -> {t['to_whom']}: {t['body'][:46]}{last}")
+    if not closed:
+        n = sum(1 for t in store.list_tasks() if t["status"] in _CLOSED)
+        if n:
+            print(f"  ({n} closed — /tasks closed · /task <id> for detail)")
+
+
+def _task_detail(store, tid: int) -> None:
+    try:
+        t = store.get_task(tid)
+    except AssertionError:
+        print(f"  no task #{tid}")
+        return
+    who = f" @{t['assignee']}" if t.get("assignee") else ""
+    print(f"  #{t['id']} [{t['status']}] {t.get('kind') or 'task'} -> {t['to_whom']}{who}")
+    print(f"  {t['body']}")
+    if t.get("result"):
+        print(f"  result: {t['result']}")
+    print("  timeline:")
+    for c in store.task_comments(tid):
+        ts = time.strftime("%H:%M", time.localtime(c["ts"]))
+        print(f"    {ts}  {c['author']} [{c['kind']}]  {c['body'][:70]}")
 
 
 def _feed(store, n: int) -> None:
@@ -149,7 +183,12 @@ def _handle(st: AppState, line: str) -> bool:
         elif cmd == "status":
             _status(st.store)
         elif cmd == "tasks":
-            _tasks(st.store)
+            _tasks(st.store, closed=(rest == "closed"))
+        elif cmd == "task":
+            if rest.isdigit():
+                _task_detail(st.store, int(rest))
+            else:
+                print("usage: /task <id>")
         elif cmd == "feed":
             _feed(st.store, _int(rest, 20))
         elif cmd == "report":
@@ -226,9 +265,14 @@ def _toolbar(st: AppState) -> str:
 
 
 def repl(workspace_uuid: str, *, notify: bool = True) -> int:
+    import shutil as _shutil
+
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import WordCompleter
+    from prompt_toolkit.formatted_text import FormattedText
+    from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.patch_stdout import patch_stdout
+    from prompt_toolkit.styles import Style
 
     st = AppState(Store(workspace_uuid))   # this thread's connection
     holder: dict = {}
@@ -241,8 +285,26 @@ def repl(workspace_uuid: str, *, notify: bool = True) -> int:
 
     threading.Thread(target=_supervise, daemon=True).start()
     threading.Thread(target=_feed_poller, args=(st,), daemon=True).start()
-    psession: PromptSession = PromptSession()
-    print(f"decmux — workspace {workspace_uuid}. supervising in the background. /help · /quit")
+
+    kb = KeyBindings()
+
+    @kb.add("enter")
+    def _(event):                       # Enter sends
+        event.current_buffer.validate_and_handle()
+
+    @kb.add("escape", "enter")
+    def _(event):                       # Alt+Enter (Esc then Enter) inserts a newline
+        event.current_buffer.insert_text("\n")
+
+    def message():
+        w = max(20, _shutil.get_terminal_size((80, 24)).columns)
+        return FormattedText([("class:sep", "─" * w + "\n"),
+                              ("class:pr", f"decmux[{st.target}]> ")])
+
+    style = Style.from_dict({"sep": "fg:#666666", "pr": "bold"})
+    psession: PromptSession = PromptSession(multiline=True, key_bindings=kb, style=style)
+    print(f"decmux — workspace {workspace_uuid}. supervising in the background.")
+    print("Enter sends · Alt+Enter for a newline · /help · /quit")
     _startup_guide(st.store)
     try:
         with patch_stdout():
@@ -250,8 +312,7 @@ def repl(workspace_uuid: str, *, notify: bool = True) -> int:
                 words, meta = _completions(st.store)
                 completer = WordCompleter(words, meta_dict=meta, sentence=True)
                 try:
-                    line = psession.prompt(f"decmux[{st.target}]> ",
-                                           completer=completer,
+                    line = psession.prompt(message(), completer=completer,
                                            bottom_toolbar=lambda: _toolbar(st))
                 except (EOFError, KeyboardInterrupt):
                     break
