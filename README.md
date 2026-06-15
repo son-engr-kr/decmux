@@ -67,6 +67,20 @@ The decmux skill and a Claude `SessionStart` hook are installed automatically on
 first run; decmux-spawned agents get a PATH guard that blocks raw `cmux` input so
 nothing bypasses the de-mixed channel.
 
+## Data & uninstall
+
+Your per-workspace state lives in `~/.local/state/decmux/<workspace-uuid>/`
+(SQLite: tasks, chat, goals, agent state; plus `files/`). The installed
+integration lives elsewhere: the skill in `~/.claude/skills/decmux/`, a
+`SessionStart` hook in `~/.claude/settings.json`, and the cmux-send guard in
+`~/.local/share/decmux/bin/`.
+
+```sh
+decmux uninstall          # remove the skill + hook + guard, KEEP your data
+decmux uninstall --data   # also wipe all per-workspace data
+uv tool uninstall decmux  # remove the command itself (leaves data + config)
+```
+
 ## Develop
 
 ```sh

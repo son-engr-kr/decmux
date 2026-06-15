@@ -83,6 +83,19 @@ def install_all_hooks() -> dict:
     return {"session_hook": install_session_hook(), "removed_legacy_prompt": removed}
 
 
+def remove_hooks() -> dict:
+    """Remove decmux's Claude Code hooks (SessionStart + any legacy prompt hooks)."""
+    if not CLAUDE_SETTINGS.exists():
+        return {"session_removed": False, "prompt_removed": False}
+    data = _load()
+    hooks = data.setdefault("hooks", {})
+    session_removed = _remove_matching(hooks, "SessionStart", _SESSION_MARKER)
+    prompt_removed = _remove_matching(hooks, "UserPromptSubmit", "decmux")
+    if session_removed or prompt_removed:
+        _save(data)
+    return {"session_removed": session_removed, "prompt_removed": prompt_removed}
+
+
 def claude_status() -> dict:
     skill = assets.SKILLS_DIR / "SKILL.md"
     data = _load()

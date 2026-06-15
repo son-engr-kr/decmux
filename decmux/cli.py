@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -340,6 +341,33 @@ def cmd_session_start(args: argparse.Namespace) -> int:
     return hooks.session_start()
 
 
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    """Remove decmux's installed integration (skill + cmux guard + Claude hook).
+
+    Keeps your per-workspace data by default; pass --data to wipe that too. This
+    does not remove the `decmux` command itself — run `uv tool uninstall decmux`."""
+    a = assets.remove()
+    h = hooks.remove_hooks()
+    print("removed decmux integration:")
+    print(f"  skill (~/.claude/skills/decmux):        {'removed' if a['skill'] else 'absent'}")
+    print(f"  cmux guard ({assets.GUARD_DIR}): {'removed' if a['guard'] else 'absent'}")
+    print(f"  Claude SessionStart hook:               {'removed' if h['session_removed'] else 'absent'}")
+    if h["prompt_removed"]:
+        print("  (also removed leftover legacy prompt hooks)")
+    root = store_mod._root()
+    if args.data:
+        if root.exists():
+            shutil.rmtree(root)
+            print(f"\n  --data: ALSO removed all workspace data: {root}")
+        else:
+            print(f"\n  --data: no data to remove ({root})")
+    else:
+        print(f"\nkept your data: {root}")
+        print("  (per-workspace tasks, chat, goals, agent state — `decmux uninstall --data` to wipe)")
+    print("\nto remove the command itself:  uv tool uninstall decmux")
+    return 0
+
+
 def cmd_app(args: argparse.Namespace) -> int:
     """The no-arg entry: open the interactive REPL (chat + commands), supervising
     in the background."""
@@ -455,6 +483,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("session-start", help="(Claude SessionStart hook) refresh + reload skill") \
         .set_defaults(func=cmd_session_start)
+
+    pu = sub.add_parser("uninstall", help="remove the skill + guard + Claude hook (keeps your data)")
+    pu.add_argument("--data", action="store_true", help="also delete all per-workspace data")
+    pu.set_defaults(func=cmd_uninstall)
 
     return p
 

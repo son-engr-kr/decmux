@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import shlex
+import shutil
 from pathlib import Path
 
 from . import __version__, cmux
@@ -165,3 +166,18 @@ def ensure(force: bool = False) -> bool:
     skill.write_text(SKILL_MD)
     STAMP.write_text(__version__)
     return True
+
+
+def remove() -> dict:
+    """Delete the installed skill and the cmux guard. Leaves workspace data alone."""
+    out = {"skill": False, "guard": False}
+    if SKILLS_DIR.exists():
+        shutil.rmtree(SKILLS_DIR)
+        out["skill"] = True
+    if GUARD_DIR.exists():
+        shutil.rmtree(GUARD_DIR)
+        out["guard"] = True
+        parent = GUARD_DIR.parent          # ~/.local/share/decmux
+        if parent.exists() and not any(parent.iterdir()):
+            parent.rmdir()
+    return out

@@ -64,3 +64,33 @@ def test_hooks_remove_legacy_prompt(sandbox):
 def test_session_start_reloads_skill(sandbox, capsys):
     assert hooks.session_start() == 0
     assert json.loads(capsys.readouterr().out) == {"reloadSkills": True}
+
+
+def test_remove_integration(sandbox):
+    assets.ensure()
+    hooks.install_all_hooks()
+    assert (sandbox / "skills" / "SKILL.md").exists()
+    out = assets.remove()
+    assert out["skill"] and out["guard"]
+    assert not (sandbox / "skills").exists() and not (sandbox / "bin").exists()
+    h = hooks.remove_hooks()
+    assert h["session_removed"] is True
+    assert hooks.claude_status()["session_start_hook"] is False
+
+
+def test_uninstall_keeps_data_then_purges(sandbox, monkeypatch, tmp_path):
+    from decmux import cli
+    from decmux.store import Store
+    state = tmp_path / "state"
+    monkeypatch.setenv("DECMUX_STATE_DIR", str(state))
+    Store("ws-x").set_goal("keep me")                 # some data to protect
+    assets.ensure()
+    hooks.install_all_hooks()
+
+    cli.main(["uninstall"])                            # default: keep data
+    assert not (sandbox / "skills").exists()           # integration removed
+    assert hooks.claude_status()["session_start_hook"] is False
+    assert (state / "ws-x" / "store.db").exists()      # data kept
+
+    cli.main(["uninstall", "--data"])                  # opt-in wipe
+    assert not state.exists()
