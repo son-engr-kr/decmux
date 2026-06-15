@@ -58,6 +58,32 @@ def install_all_hooks() -> dict:
     return {"session_hook": install_session_hook()}
 
 
+def _remove_matching(hooks: dict, event: str, needle: str) -> bool:
+    entries = hooks.get(event)
+    if not entries:
+        return False
+    kept = [e for e in entries
+            if not any(needle in h.get("command", "") for h in e.get("hooks", []))]
+    if len(kept) == len(entries):
+        return False
+    if kept:
+        hooks[event] = kept
+    else:
+        hooks.pop(event, None)
+    return True
+
+
+def remove_session_hook() -> bool:
+    """Remove the decmux SessionStart hook from settings.json (the inverse of setup)."""
+    if not CLAUDE_SETTINGS.exists():
+        return False
+    data = _load()
+    changed = _remove_matching(data.setdefault("hooks", {}), "SessionStart", _SESSION_MARKER)
+    if changed:
+        _save(data)
+    return changed
+
+
 def claude_status() -> dict:
     data = _load()
     return {

@@ -88,16 +88,15 @@ global artifacts are the `SessionStart` hook in `~/.claude/settings.json` and th
 on-demand cmux-send guard in `~/.local/share/decmux/bin/`.
 
 ```sh
-uv tool uninstall decmux  # THE uninstall: removes the command. The SessionStart
-                          # hook self-guards (`command -v decmux ... || true`), so
-                          # once decmux is gone it is an inert no-op — nothing to
-                          # clean up, no skill file to orphan.
-
+decmux setup --remove     # remove the global SessionStart hook from ~/.claude
 decmux purge              # delete this workspace's data
 decmux purge --all        # delete all workspaces' data
+uv tool uninstall decmux  # remove the command itself
 ```
 
-decmux itself only ever deletes data (`purge`); removing the tool is uv's job.
+`setup` ↔ `setup --remove` owns the global hook; `purge` owns data; `uv` owns the
+binary. Even if you skip `setup --remove`, the hook self-guards
+(`command -v decmux ... || true`), so it is an inert no-op once decmux is gone.
 
 ## Develop
 

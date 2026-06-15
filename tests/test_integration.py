@@ -53,6 +53,13 @@ def test_setup_hint_when_no_hook(sandbox, capsys):
     assert "decmux setup" in capsys.readouterr().out
 
 
+def test_setup_remove(sandbox):
+    cli.main(["setup"])
+    assert hooks.claude_status()["session_start_hook"] is True
+    cli.main(["setup", "--remove"])                    # inverse of setup
+    assert hooks.claude_status()["session_start_hook"] is False
+
+
 # --- protocol injection is scoped to decmux sessions ---
 
 def test_injects_for_spawned_agent(sandbox, monkeypatch, capsys):

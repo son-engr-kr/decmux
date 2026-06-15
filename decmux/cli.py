@@ -413,17 +413,21 @@ def _setup_hint() -> None:
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
-    """Install the Claude SessionStart hook that injects the decmux protocol.
-
-    The protocol is injected only into decmux-managed sessions (no skill file).
-    The cmux guard is created on demand when you `decmux spawn` an agent. Undo by
-    removing the command itself: `uv tool uninstall decmux` (the hook self-guards
-    to a no-op once decmux is gone)."""
+    """Install (or --remove) the global Claude SessionStart hook that injects the
+    decmux protocol into decmux-managed sessions (no skill file). The cmux guard is
+    created on demand when you `decmux spawn`/`agent`."""
+    if args.remove:
+        removed = hooks.remove_session_hook()
+        print("removed the global decmux SessionStart hook" if removed
+              else "no decmux hook installed")
+        return 0
     res = hooks.install_all_hooks()
     print("decmux setup complete:")
-    print(f"  Claude SessionStart hook: {'installed' if res['session_hook'] else 'already present'}")
-    print("  protocol is injected per-session for decmux surfaces (no skill file)")
-    print("\nto remove later:  uv tool uninstall decmux   (data: decmux purge)")
+    print(f"  Claude SessionStart hook (~/.claude/settings.json): "
+          f"{'installed' if res['session_hook'] else 'already present'}")
+    print("  protocol is injected per-session for decmux surfaces only (no skill file)")
+    print("\nundo:  decmux setup --remove   (hook)   ·   decmux purge   (data)   ·   "
+          "uv tool uninstall decmux   (command)")
     return 0
 
 
@@ -537,8 +541,9 @@ def build_parser() -> argparse.ArgumentParser:
     psp.add_argument("--workspace")
     psp.set_defaults(func=cmd_spawn)
 
-    sub.add_parser("setup", help="install the Claude SessionStart protocol hook") \
-        .set_defaults(func=cmd_setup)
+    psu = sub.add_parser("setup", help="install (or --remove) the global Claude SessionStart hook")
+    psu.add_argument("--remove", action="store_true", help="uninstall the global hook (inverse of setup)")
+    psu.set_defaults(func=cmd_setup)
 
     sub.add_parser("session-start", help="(internal) Claude SessionStart hook entry") \
         .set_defaults(func=cmd_session_start)
