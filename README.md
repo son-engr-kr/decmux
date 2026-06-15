@@ -43,6 +43,7 @@ uv tool install git+https://github.com/son-engr-kr/decmux
 ## Use
 
 ```sh
+decmux setup           # once: install the agent skill + SessionStart hook (global)
 decmux                 # open the REPL for this workspace (supervises in the background)
 decmux register        # bind the current surface as this workspace's manager
 decmux goal "ship v1"  # set the goal; briefs the manager
@@ -63,9 +64,11 @@ decmux send "looked at the logs, root cause is X" --to manager
 decmux task done 12 "fixed and verified"
 ```
 
-The decmux skill and a Claude `SessionStart` hook are installed automatically on
-first run; decmux-spawned agents get a PATH guard that blocks raw `cmux` input so
-nothing bypasses the de-mixed channel.
+Run `decmux setup` once to install the decmux skill + a Claude `SessionStart`
+hook (so agents learn the protocol). decmux-spawned agents also get a PATH guard
+that blocks raw `cmux` input so nothing bypasses the de-mixed channel. `decmux`
+and `decmux run` never write global config themselves — only `decmux setup` does,
+and `decmux uninstall` reverses it.
 
 ## Data & uninstall
 

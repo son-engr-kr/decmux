@@ -368,18 +368,35 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     return 0
 
 
+def _setup_hint() -> None:
+    """Nudge toward explicit setup, without writing global config on every run."""
+    if not (assets.SKILLS_DIR / "SKILL.md").exists():
+        print("tip: run `decmux setup` once to onboard agents "
+              "(installs the skill + Claude SessionStart hook).")
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    """Install the agent integration: skill + cmux guard + Claude SessionStart hook."""
+    assets.ensure()
+    res = hooks.install_all_hooks()
+    print("decmux setup complete:")
+    print("  skill:                    ~/.claude/skills/decmux/SKILL.md")
+    print(f"  cmux guard:               {assets.GUARD_DIR}")
+    print(f"  Claude SessionStart hook: {'installed' if res['session_hook'] else 'already present'}")
+    print("undo with: decmux uninstall")
+    return 0
+
+
 def cmd_app(args: argparse.Namespace) -> int:
     """The no-arg entry: open the interactive REPL (chat + commands), supervising
-    in the background."""
-    assets.ensure()                 # zero-setup: skill + guard
-    hooks.install_all_hooks()       # idempotent SessionStart hook
+    in the background. Does not touch global config — run `decmux setup` for that."""
+    _setup_hint()
     return app.repl(_ws_uuid(args), notify=not args.no_notify)
 
 
 def cmd_run(args: argparse.Namespace) -> int:
     """Headless foreground supervision (no REPL) — `decmux run`."""
-    assets.ensure()
-    hooks.install_all_hooks()
+    _setup_hint()
     sess = session.Session(_ws_uuid(args), notify=not args.no_notify, pin=args.pin)
     print(f"decmux: supervising workspace {sess.workspace_uuid} (ctrl-c to stop)")
     return sess.run(interval=args.interval, ticks=args.ticks)
@@ -476,6 +493,9 @@ def build_parser() -> argparse.ArgumentParser:
     psp.add_argument("--command")
     psp.add_argument("--workspace")
     psp.set_defaults(func=cmd_spawn)
+
+    sub.add_parser("setup", help="install the skill + cmux guard + Claude SessionStart hook") \
+        .set_defaults(func=cmd_setup)
 
     ph = sub.add_parser("hooks", help="install/status the Claude Code SessionStart hook")
     ph.add_argument("action", choices=["install", "status"], nargs="?", default="status")

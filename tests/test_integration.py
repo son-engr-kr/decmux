@@ -94,3 +94,21 @@ def test_uninstall_keeps_data_then_purges(sandbox, monkeypatch, tmp_path):
 
     cli.main(["uninstall", "--data"])                  # opt-in wipe
     assert not state.exists()
+
+
+def test_setup_then_uninstall_roundtrip(sandbox, monkeypatch, tmp_path):
+    from decmux import cli
+    monkeypatch.setenv("DECMUX_STATE_DIR", str(tmp_path / "state"))
+    cli.main(["setup"])
+    assert (sandbox / "skills" / "SKILL.md").exists()
+    assert hooks.claude_status()["session_start_hook"] is True
+    cli.main(["uninstall"])
+    assert not (sandbox / "skills").exists()
+    assert hooks.claude_status()["session_start_hook"] is False
+
+
+def test_setup_hint_does_not_write(sandbox, capsys):
+    from decmux import cli
+    cli._setup_hint()                                  # skill not installed
+    assert "decmux setup" in capsys.readouterr().out
+    assert not (sandbox / "skills").exists()           # hint never writes global config
