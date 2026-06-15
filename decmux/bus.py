@@ -532,6 +532,46 @@ def flush_outbox(store, surface_uuid: str, surface_ref: str, ws_ref: str,
     return len(sent_ids)
 
 
+AGENT_CMD = {"claude": "claude --dangerously-skip-permissions", "codex": "codex --yolo"}
+
+
+def spawn_agent(store, *, name: str | None = None, kind: str = "claude",
+                manager: bool = False, command: str | None = None) -> dict:
+    """Create a new cmux surface and launch a decmux-managed agent in it.
+
+    Records the surface in the managed registry, sets DECMUX_ROLE + the cmux guard,
+    binds the manager if requested, and onboards a codex agent via the protocol."""
+    wl = cmux.run_json("workspace", "list", "--id-format", "both", "--json")["workspaces"]
+    w = next((x for x in wl if x.get("id") == store.workspace_uuid), None)
+    assert w, "workspace not found"
+    ws_ref, cwd = w["ref"], w.get("current_directory", "")
+    if manager and store.manager():
+        m = store.manager()
+        return {"created": False, "reason": "manager already bound", "surface_ref": m[1]}
+    out = cmux.run("new-surface", "--type", "terminal", "--workspace", ws_ref,
+                   "--no-focus", "--id-format", "both")
+    m = re.search(r"(surface:\d+)\s+\(([0-9A-Fa-f-]+)\)", out)
+    assert m, f"could not parse new surface id from: {out!r}"
+    sref, suuid = m.group(1), m.group(2)
+    nm = name or ("manager" if manager else "agent")
+    cmux.run("rename-tab", "--workspace", ws_ref, "--surface", sref, nm)
+    store.mark_managed(suuid, role=("manager" if manager else "agent"))
+    cmd = assets.guarded_command(
+        command or AGENT_CMD.get(kind or "claude", AGENT_CMD["claude"]),
+        env={"CMUX_WORKSPACE_ID": store.workspace_uuid, "CMUX_WORKSPACE_REF": ws_ref,
+             "CMUX_SURFACE_ID": suuid, "CMUX_SURFACE_REF": sref,
+             "DECMUX_ROLE": "manager" if manager else "agent"},
+        cwd=cwd or None)
+    cmux.run("send", "--workspace", ws_ref, "--surface", sref, cmd)
+    cmux.run("send-key", "--workspace", ws_ref, "--surface", sref, "Enter")
+    if kind == "codex":                  # claude gets the protocol via the SessionStart hook
+        deliver_protocol(store, suuid, sref)
+    if manager:
+        store.bind_manager(surface_uuid=suuid, surface_ref=sref, cwd=cwd)
+    store.commit()
+    return {"created": True, "name": nm, "surface_ref": sref, "manager": manager}
+
+
 def deliver_protocol(store, surface_uuid: str, surface_ref: str) -> int:
     """Onboard a non-Claude agent (e.g. codex) by queuing the decmux protocol once.
 

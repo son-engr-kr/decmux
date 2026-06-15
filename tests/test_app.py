@@ -62,6 +62,19 @@ def test_startup_guide_silent_with_team(st, capsys):
     assert capsys.readouterr().out == ""               # team exists -> no guide
 
 
+def test_slash_spawn_routes_to_spawn_agent(st, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        bus, "spawn_agent",
+        lambda store, **k: calls.append(k) or
+        {"created": True, "name": k.get("name") or "agent", "surface_ref": "surface:9",
+         "manager": k.get("manager", False)})
+    app._handle(st, "/spawn worker1")
+    app._handle(st, "/spawn-manager")
+    assert calls[0] == {"name": "worker1", "manager": False}
+    assert calls[1] == {"name": None, "manager": True}
+
+
 def test_blank_line_is_noop(st):
     assert app._handle(st, "   ") is True
 

@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import shlex
 import shutil
 import subprocess
@@ -20,8 +19,6 @@ import time
 from . import app, assets, bus, cmux, hooks, session, watch
 from . import store as store_mod
 from .store import Store
-
-AGENT_CMD = {"claude": "claude --dangerously-skip-permissions", "codex": "codex --yolo"}
 
 
 # --- workspace resolution (the caller's cmux workspace) ---
@@ -297,39 +294,14 @@ def cmd_ls(args: argparse.Namespace) -> int:
 
 
 def cmd_spawn(args: argparse.Namespace) -> int:
-    """Create a new agent in its own named cmux surface (optionally the manager)."""
-    ws_uuid = _ws_uuid(args)
-    wl = cmux.run_json("workspace", "list", "--id-format", "both", "--json")["workspaces"]
-    w = next((x for x in wl if x.get("id") == ws_uuid), None)
-    assert w, f"workspace {ws_uuid} not found"
-    ws_ref, cwd = w["ref"], w.get("current_directory", "")
-    store = Store(ws_uuid)
-    if args.manager and store.manager():
-        print(f"manager already bound for {ws_ref} (no-op)")
-        return 0
-    out = cmux.run("new-surface", "--type", "terminal", "--workspace", ws_ref,
-                   "--no-focus", "--id-format", "both")
-    m = re.search(r"(surface:\d+)\s+\(([0-9A-Fa-f-]+)\)", out)
-    assert m, f"could not parse new surface id from: {out!r}"
-    sref, suuid = m.group(1), m.group(2)
-    name = args.name or ("manager" if args.manager else "agent")
-    cmux.run("rename-tab", "--workspace", ws_ref, "--surface", sref, name)
-    store.mark_managed(suuid, role=("manager" if args.manager else "agent"))
-    store.commit()
-    cmd = args.command or AGENT_CMD.get(args.kind or "claude", AGENT_CMD["claude"])
-    cmd = assets.guarded_command(cmd, env={
-        "CMUX_WORKSPACE_ID": ws_uuid, "CMUX_WORKSPACE_REF": ws_ref,
-        "CMUX_SURFACE_ID": suuid, "CMUX_SURFACE_REF": sref,
-        "DECMUX_ROLE": "manager" if args.manager else "agent",
-    }, cwd=cwd or None)
-    cmux.run("send", "--workspace", ws_ref, "--surface", sref, cmd)
-    cmux.run("send-key", "--workspace", ws_ref, "--surface", sref, "Enter")
-    if args.kind == "codex":          # claude gets the protocol via the SessionStart hook
-        bus.deliver_protocol(store, suuid, sref)
-    if args.manager:
-        store.bind_manager(surface_uuid=suuid, surface_ref=sref, cwd=cwd)
-    store.commit()
-    print(f"spawned {name}: {sref} @ {ws_ref}" + (" (manager)" if args.manager else ""))
+    """Create a new cmux surface and launch a decmux-managed agent in it."""
+    res = bus.spawn_agent(_store(args), name=args.name, kind=args.kind,
+                          manager=args.manager, command=args.command)
+    if res.get("created"):
+        print(f"spawned {res['name']}: {res['surface_ref']}"
+              + (" (manager)" if res["manager"] else ""))
+    else:
+        print(res.get("reason", "not created"))
     return 0
 
 
@@ -346,7 +318,7 @@ def _agent_launch(*, caller: dict, role: str, kind: str | None, command: str | N
         "DECMUX_REAL_CMUX": real_cmux or "",
         "PATH": f"{guard_dir}:{env.get('PATH', '')}",
     })
-    cmd = command or AGENT_CMD.get(kind or "claude", AGENT_CMD["claude"])
+    cmd = command or bus.AGENT_CMD.get(kind or "claude", bus.AGENT_CMD["claude"])
     return shlex.split(cmd), env
 
 

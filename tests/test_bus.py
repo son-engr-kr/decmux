@@ -127,6 +127,34 @@ def test_send_force_overrides_withhold(s, recorder):
 
 # --- send: human-gate reroute ---
 
+@pytest.fixture
+def fake_cmux(monkeypatch, tmp_path):
+    from decmux import assets, cmux
+    monkeypatch.setattr(cmux, "CMUX_BIN", "/usr/bin/cmux")
+    monkeypatch.setattr(assets, "GUARD_DIR", tmp_path / "bin")
+    monkeypatch.setattr(assets, "GUARD_CMUX", tmp_path / "bin" / "cmux")
+
+    def run(*a):
+        return "surface:5 (AAAA-5)\n" if a and a[0] == "new-surface" else ""
+    monkeypatch.setattr(cmux, "run", run)
+    monkeypatch.setattr(cmux, "run_json",
+                        lambda *a: {"workspaces": [{"id": "ws-test", "ref": "workspace:1",
+                                                    "current_directory": "/x"}]})
+
+
+def test_spawn_agent_marks_managed(s, fake_cmux):
+    res = bus.spawn_agent(s, name="w1", manager=False)
+    assert res["created"] and res["surface_ref"] == "surface:5"
+    assert s.is_managed("AAAA-5")
+    assert not s.manager()                    # a worker doesn't bind the manager
+
+
+def test_spawn_manager_binds_and_is_idempotent(s, fake_cmux):
+    res = bus.spawn_agent(s, manager=True)
+    assert res["manager"] and s.manager()[0] == "AAAA-5"
+    assert bus.spawn_agent(s, manager=True)["created"] is False   # already bound
+
+
 def test_deliver_protocol_queues(s):
     # onboarding a codex agent queues the full protocol once (de-mixed)
     oid = bus.deliver_protocol(s, "u1", "surface:1")

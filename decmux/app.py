@@ -20,17 +20,20 @@ from . import bus
 from . import session as session_mod
 from .store import Store
 
-_COMMANDS = ["/to", "/status", "/tasks", "/feed", "/report", "/goal", "/help", "/quit"]
+_COMMANDS = ["/spawn-manager", "/spawn", "/goal", "/to", "/status", "/tasks",
+             "/feed", "/report", "/help", "/quit"]
 _TARGETS = ["manager", "you", "all"]
 
 # shown beside each completion (prompt_toolkit display_meta) when it is focused
 _CMD_META = {
+    "/spawn-manager": "create the manager in a new surface",
+    "/spawn": "add a worker agent in a new surface  (/spawn <name>)",
+    "/goal": "set the workspace goal (briefs the manager)",
     "/to": "set message target (manager | you | <agent> | all)",
     "/status": "agent states (from the supervisor)",
     "/tasks": "open tasks",
     "/feed": "recent human-facing chat  (/feed N)",
     "/report": "recent state transitions  (/report N)",
-    "/goal": "set the workspace goal (briefs the manager)",
     "/help": "list commands",
     "/quit": "exit (supervision stops)",
 }
@@ -52,12 +55,14 @@ def _completions(store) -> tuple[list[str], dict[str, str]]:
 
 HELP = """commands:
   <text>            send to the current target (default: manager)
+  /spawn-manager    create the manager in a new surface
+  /spawn [name]     add a worker agent in a new surface
+  /goal <text>      set the workspace goal (briefs the manager)
   /to <name>        set target (manager | you | <agent> | all)
   /status           agent states (from the supervisor)
   /tasks            open tasks
   /feed [n]         recent human-facing chat
   /report [n]       recent state transitions
-  /goal <text>      set the workspace goal (briefs the manager)
   /help  /quit"""
 
 _GLYPH = {"working": "●", "idle": "○", "stuck": "▲", "error": "✖",
@@ -142,6 +147,16 @@ def _handle(st: AppState, line: str) -> bool:
             else:
                 res = bus.send(st.store, "/goal " + rest, to="manager", frm="you")
                 print(f"goal set (delivered {res.get('delivered', 0)}, queued {res.get('queued', 0)})")
+        elif cmd in ("spawn", "spawn-manager"):
+            res = bus.spawn_agent(st.store, name=(rest or None), manager=(cmd == "spawn-manager"))
+            if res.get("created"):
+                label = "manager" if res["manager"] else res["name"]
+                print(f"spawned {label}: {res['surface_ref']} "
+                      f"(switch to it in cmux to watch)")
+                if res["manager"]:
+                    st.target = "manager"
+            else:
+                print(res.get("reason", "not created"))
         else:
             print(f"unknown command: /{cmd}  (try /help)")
         return True
@@ -181,11 +196,11 @@ def _startup_guide(store) -> None:
     if store.manager() or store.managed_set():
         return
     print(
-        "\nNo agents yet — build a team in OTHER cmux surfaces:\n"
-        "  manager:  open a surface, run   decmux agent --manager\n"
-        "  worker :  open a surface, run   decmux agent        (or: decmux spawn --name <role>)\n"
-        "then, here:  /goal <text>  to set the objective, then type to message the manager.\n"
-        "(/help for all commands)\n"
+        "\nNo agents yet. Build a team right here:\n"
+        "  /spawn-manager       create the manager (a Claude that runs the team)\n"
+        "  /spawn <name>        add a worker agent\n"
+        "then:  /goal <text>  to set the objective, then type to message the manager.\n"
+        "(or convert a surface you already opened: run `decmux agent --manager` / `decmux agent` there)\n"
     )
 
 
