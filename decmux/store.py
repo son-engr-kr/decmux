@@ -91,8 +91,8 @@ _CLOSED = "('done','answered')"
 
 
 class Store:
-    def __init__(self, workspace_uuid: str = "default", *, root: Path | None = None) -> None:
-        root = root if root is not None else _root()
+    def __init__(self, workspace_uuid: str = "default", *, root: Path | str | None = None) -> None:
+        root = Path(root) if root is not None else _root()
         self.workspace_uuid = workspace_uuid
         self.dir = root / workspace_uuid
         self.files_dir = self.dir / "files"
