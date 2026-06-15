@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -328,6 +330,46 @@ def cmd_spawn(args: argparse.Namespace) -> int:
     return 0
 
 
+def _agent_launch(*, caller: dict, role: str, kind: str | None, command: str | None,
+                  guard_dir: str, real_cmux: str | None) -> tuple[list[str], dict]:
+    """Build (argv, env) to exec an agent in the current surface, decmux-tagged."""
+    env = dict(os.environ)
+    env.update({
+        "DECMUX_ROLE": role,
+        "CMUX_WORKSPACE_ID": caller.get("workspace_id", ""),
+        "CMUX_WORKSPACE_REF": caller.get("workspace_ref", ""),
+        "CMUX_SURFACE_ID": caller.get("surface_id", ""),
+        "CMUX_SURFACE_REF": caller.get("surface_ref", ""),
+        "DECMUX_REAL_CMUX": real_cmux or "",
+        "PATH": f"{guard_dir}:{env.get('PATH', '')}",
+    })
+    cmd = command or AGENT_CMD.get(kind or "claude", AGENT_CMD["claude"])
+    return shlex.split(cmd), env
+
+
+def cmd_agent(args: argparse.Namespace) -> int:
+    """Become a decmux-managed agent in THIS surface (run instead of `claude`).
+
+    Sets DECMUX_ROLE + the cmux-send guard and execs the agent in place, so its
+    SessionStart hook injects the decmux protocol — the way to onboard a surface
+    you opened yourself, without spawning a new one."""
+    c = _caller()
+    store = Store(c["workspace_id"])
+    role = "manager" if args.manager else "agent"
+    if args.manager:
+        cwd = next((w.get("current_directory", "")
+                    for w in cmux.run_json("workspace", "list", "--json").get("workspaces", [])
+                    if w["ref"] == c["workspace_ref"]), "")
+        store.bind_manager(surface_uuid=c["surface_id"], surface_ref=c["surface_ref"], cwd=cwd)
+        store.commit()
+    if args.name:
+        cmux.run("rename-tab", "--workspace", c["workspace_ref"], "--surface", c["surface_ref"], args.name)
+    guard_dir = assets._ensure_cmux_guard()
+    argv, env = _agent_launch(caller=c, role=role, kind=args.kind, command=args.command,
+                              guard_dir=str(guard_dir), real_cmux=cmux.CMUX_BIN)
+    os.execvpe(argv[0], argv, env)   # replaces this process with the agent
+
+
 def cmd_hooks(args: argparse.Namespace) -> int:
     if args.action == "install":
         print(json.dumps(hooks.install_all_hooks(), indent=2))
@@ -484,6 +526,13 @@ def build_parser() -> argparse.ArgumentParser:
     prep.add_argument("--limit", type=int, default=30)
     prep.add_argument("--workspace")
     prep.set_defaults(func=cmd_report)
+
+    pag = sub.add_parser("agent", help="become a decmux agent in THIS surface (run instead of claude)")
+    pag.add_argument("--name")
+    pag.add_argument("--kind", choices=["claude", "codex"], default="claude")
+    pag.add_argument("--manager", action="store_true")
+    pag.add_argument("--command")
+    pag.set_defaults(func=cmd_agent)
 
     psp = sub.add_parser("spawn", help="create a new agent in its own surface")
     psp.add_argument("--name")

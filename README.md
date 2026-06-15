@@ -46,6 +46,8 @@ uv tool install git+https://github.com/son-engr-kr/decmux
 decmux setup           # once: install the Claude SessionStart hook (global)
 decmux                 # open the REPL for this workspace (supervises in the background)
 decmux register        # bind the current surface as this workspace's manager
+decmux agent           # in a surface you opened: become a managed agent (instead of `claude`)
+decmux spawn --name x  # or: create a managed agent in its own new surface
 decmux goal "ship v1"  # set the goal; briefs the manager
 decmux status          # agent states    decmux ls   # known workspaces
 decmux run             # headless supervision (no REPL)
@@ -71,6 +73,12 @@ in its workspace store), so your normal Claude sessions are untouched. There is
 **no skill file**. decmux-spawned agents also get a PATH guard that blocks raw
 `cmux` input. `decmux` and `decmux run` never write global config — only
 `decmux setup` does.
+
+To onboard a worker you start yourself, run **`decmux agent`** in that surface
+instead of `claude` (or `decmux spawn` to create one in a new surface) — it tags
+the surface so the protocol is injected. A bare `claude` is deliberately left
+untouched, so a plain Claude session you open in the same workspace never gets
+"you are a decmux agent."
 
 ## Data & uninstall
 

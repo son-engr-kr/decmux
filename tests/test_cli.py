@@ -56,3 +56,13 @@ def test_send_creates_triage_task(wired):
 def test_parser_defaults_to_app():
     args = cli.build_parser().parse_args([])
     assert args.func is cli.cmd_app   # no-arg `decmux` opens the interactive REPL
+
+
+def test_agent_launch_plan():
+    caller = {"workspace_id": "w", "workspace_ref": "workspace:1",
+              "surface_id": "s", "surface_ref": "surface:1"}
+    argv, env = cli._agent_launch(caller=caller, role="agent", kind="claude",
+                                  command=None, guard_dir="/g", real_cmux="/r/cmux")
+    assert argv[0] == "claude" and "--dangerously-skip-permissions" in argv
+    assert env["DECMUX_ROLE"] == "agent" and env["CMUX_SURFACE_ID"] == "s"
+    assert env["PATH"].startswith("/g:") and env["DECMUX_REAL_CMUX"] == "/r/cmux"
