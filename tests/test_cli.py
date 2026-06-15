@@ -53,6 +53,15 @@ def test_send_creates_triage_task(wired):
     assert len(tasks) == 1 and tasks[0]["status"] == "triage"
 
 
+def test_answer_to_human_task_surfaces_to_repl(wired, monkeypatch):
+    cli.main(["task", "add", "is the build green?"])          # author defaults to you
+    tid = store(wired).list_tasks()[0]["id"]
+    monkeypatch.setattr(bus, "resolve_sender", lambda s: "manager")   # manager answers
+    cli.main(["task", "answer", str(tid), "yes, all green"])
+    chats = store(wired).recent_chat(kind="chat")
+    assert any(c["frm"] == "manager" and "yes, all green" in c["body"] for c in chats)
+
+
 def test_parser_defaults_to_app():
     args = cli.build_parser().parse_args([])
     assert args.func is cli.cmd_app   # no-arg `decmux` opens the interactive REPL

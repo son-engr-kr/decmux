@@ -73,6 +73,23 @@ def test_non_alert_state_is_noop(wired):
     assert delivers == [] and notifies == []
 
 
+def test_manager_itself_escalates_to_human_not_self_poke(wired):
+    sess, store, delivers, notifies = wired
+    add_manager(store)
+    sess._health_step("m1", "stuck", "manager", now=0, is_manager=True)
+    sess._health_step("m1", "stuck", "manager", now=15, is_manager=True)
+    assert delivers == []                 # never poke the manager about itself (no loop)
+    assert len(notifies) == 1             # escalated to the human instead
+
+
+def test_idle_with_no_work_is_not_stuck(wired):
+    sess, store, delivers, notifies = wired
+    add_manager(store)
+    sess._health_step("a1", "stuck", "worker", now=0, has_work=False)
+    sess._health_step("a1", "stuck", "worker", now=999, has_work=False)
+    assert delivers == [] and notifies == []   # nothing assigned -> waiting, not stuck
+
+
 def _row(uuid, ref, state="idle"):
     s = watch.Surface(ref=ref, uuid=uuid, pane="p", workspace="w", workspace_uuid="ws",
                       title="t", cpu=0.0, mem=0, procs=1)

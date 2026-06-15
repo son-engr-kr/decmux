@@ -243,6 +243,9 @@ def cmd_task(args: argparse.Namespace) -> int:
                                       body=(text or "task reopened"), author=sender)
         body = f"task #{tid} reopened (delivered {res['delivered']}, queued {res['queued']})"
     store.add_chat(frm=sender, dst="manager", body=body, kind="report")
+    if (task.get("author") or "").strip().lower() in bus._HUMAN:
+        # the asker gets answers/updates back in their REPL feed (human-facing chat)
+        store.add_chat(frm=sender, dst="you", body=body, kind="chat")
     store.commit()
     print(f"task #{tid} {args.action}")
     return 0

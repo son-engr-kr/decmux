@@ -92,8 +92,13 @@ class Session:
             pass
 
     # --- stuck-handling: poke the manager once, then escalate to the human ---
-    def _health_step(self, key: str, state: str, name: str, now: float) -> None:
-        if state not in POKE_STATES:
+    def _health_step(self, key: str, state: str, name: str, now: float, *,
+                     is_manager: bool = False, has_work: bool = True) -> None:
+        # An agent idle with nothing assigned isn't "stuck" — it's waiting (the
+        # manager after clearing triage, or an unassigned worker). Only treat
+        # `stuck` as actionable when there's work to stall on; error/dead always are.
+        benign = state == "stuck" and not has_work
+        if state not in POKE_STATES or benign:
             self._stuck_since.pop(key, None)
             self._poked.discard(key)
             self._escalated.discard(key)
@@ -103,22 +108,23 @@ class Session:
         if elapsed < self.cfg.stuck_poke_after:
             return
         mins = int(elapsed // 60)
+        # the manager itself (or no manager bound) is the human's call — never poke
+        # the manager about itself, which just loops.
+        to_human = is_manager or not self.store.manager()
         if key not in self._poked:
-            if self.store.manager():
+            if to_human:
+                self._notify_human(f"decmux: {name} {state}",
+                                   f"{name} {state} {mins}m — needs you")
+            else:
                 bus.send(
                     self.store,
-                    f"agent {name} {state} {mins}m on '{name}' — "
-                    "intervene (nudge / reassign / respawn).",
+                    f"agent {name} {state} {mins}m — intervene (nudge / reassign / respawn).",
                     to="manager", frm="decmux", track_task=False,
                 )
-                self._poked.add(key)
-            else:
-                self._notify_human(f"decmux: {state}",
-                                   f"{name} {state} {mins}m, no manager bound")
-                self._escalated.add(key)
+            self._poked.add(key)
             return
-        # already poked the manager: escalate to the human if it stays unresolved
-        if (key not in self._escalated
+        # poked the manager about a worker: escalate to the human if it stays unresolved
+        if (not to_human and key not in self._escalated
                 and elapsed >= self.cfg.stuck_poke_after + self.cfg.escalation_timeout):
             self._notify_human(f"decmux: still {state} (manager silent)",
                                f"{name} {state} {mins}m")
@@ -235,6 +241,8 @@ class Session:
         rows = [r for r in rows if r.surface.key in managed]
         if rows and rows[0].workspace_cwd:        # workspace dir, for `/status`
             self.store.set_meta("cwd", rows[0].workspace_cwd)
+        mgr = self.store.manager()
+        mgr_uuid = mgr[0] if mgr else None
         present: set[str] = set()
         for r in rows:
             key = r.surface.key
@@ -253,7 +261,11 @@ class Session:
                 procs=json.dumps(_top_procs(r.surface.proc_names)),
                 model=(r.model or None), effort=(r.effort or None),
                 busy_kind=(r.busy_kind or None))
-            self._health_step(key, r.state, bus._clean_name(r.surface.title), now)
+            is_mgr = key == mgr_uuid
+            actor = "manager" if is_mgr else bus._clean_name(r.surface.title)
+            has_work = bool(self.store.open_tasks_for_actor(actor=actor))
+            self._health_step(key, r.state, bus._clean_name(r.surface.title), now,
+                              is_manager=is_mgr, has_work=has_work)
             # one queued message per idle turn, re-armed when the agent leaves idle
             if r.state != "idle":
                 self.flushed_idle.discard(key)
