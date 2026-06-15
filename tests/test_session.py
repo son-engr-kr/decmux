@@ -91,3 +91,37 @@ def test_tick_only_manages_onboarded(tmp_path, monkeypatch):
                                          _row("u-bare", "surface:2")])
     sess.tick(now=100.0)
     assert {a["surface_uuid"] for a in store.list_agents()} == {"u-managed"}
+
+
+def test_tick_unmanages_closed_manager(tmp_path, monkeypatch):
+    """A managed surface gone from cmux is unmanaged; a closed manager is unbound."""
+    monkeypatch.setattr(bus, "_ws_ref", lambda store: "")
+    store = Store("ws", root=tmp_path)
+    store.mark_managed("u-mgr", "manager")
+    store.bind_manager(surface_uuid="u-mgr", surface_ref="surface:1", cwd="")
+    store.commit()
+    sess = session.Session("ws", store=store, notify=False)
+
+    def gone_poll(*a, **k):
+        sess.watcher.present_surfaces = set()          # surface no longer in cmux
+        return []
+    monkeypatch.setattr(sess.watcher, "poll", gone_poll)
+    sess.tick(now=100.0)
+    assert store.manager() is None                      # binding cleared
+    assert store.managed_set() == set()                 # unmanaged
+
+
+def test_tick_keeps_present_but_unclassified_surface(tmp_path, monkeypatch):
+    """A managed surface that exists but isn't an agent yet (just spawned) is kept."""
+    monkeypatch.setattr(bus, "_ws_ref", lambda store: "")
+    store = Store("ws", root=tmp_path)
+    store.mark_managed("u1")
+    store.commit()
+    sess = session.Session("ws", store=store, notify=False)
+
+    def booting_poll(*a, **k):
+        sess.watcher.present_surfaces = {"u1"}          # exists, not classified yet
+        return []
+    monkeypatch.setattr(sess.watcher, "poll", booting_poll)
+    sess.tick(now=100.0)
+    assert store.managed_set() == {"u1"}                # present -> not unmanaged

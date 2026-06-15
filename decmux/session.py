@@ -259,6 +259,19 @@ class Session:
                 if bus.flush_outbox(self.store, key, r.surface.ref, self.ws_ref):
                     self.flushed_idle.add(key)
 
+        # A managed surface absent from cmux entirely has been closed: unmanage it,
+        # and drop the manager binding if it was the manager — so decmux notices a
+        # closed manager instead of routing to a dead surface forever.
+        for uuid in managed - self.watcher.present_surfaces:
+            was_manager = bool(self.store.manager()) and self.store.manager()[0] == uuid
+            self.store.unmark_managed(uuid)
+            self.store.record_transition(surface_uuid=uuid, title="(surface closed)",
+                                         from_state=self.known.get(uuid), to_state="dead")
+            if was_manager:
+                self.store.clear_manager()
+                self._notify_human("decmux: manager surface closed",
+                                   "no manager bound — spawn one with /spawn-manager")
+
         self._manager_pulse(now)
         if self.pin:
             self._pin(rows)

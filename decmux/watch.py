@@ -276,6 +276,7 @@ class Watcher:
         self._screen_state: dict[str, tuple[str, float]] = {}
         self.model: dict[str, str] = {}
         self.effort: dict[str, str] = {}
+        self.present_surfaces: set[str] = set()   # all surface UUIDs in this workspace
 
     def note_activity(self, now: float | None = None) -> None:
         """Record event-stream activity for this workspace (push signal from the session)."""
@@ -332,6 +333,11 @@ class Watcher:
         agents = [s for s in surfaces
                   if s.is_agent and s.workspace_uuid == self.workspace_uuid]
         single_agent = len(agents) == 1
+        # every surface present in this workspace (agent or not) — for detecting
+        # a closed/gone surface without racing a just-spawned one that isn't an
+        # agent yet.
+        self.present_surfaces = {s.uuid for s in surfaces
+                                 if s.workspace_uuid == self.workspace_uuid and s.uuid}
 
         rows: list[Row] = []
         for s in agents:

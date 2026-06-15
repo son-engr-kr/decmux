@@ -251,6 +251,9 @@ class Store:
         ).fetchone()
         return (r["surface_uuid"], r["surface_ref"]) if r else None
 
+    def clear_manager(self) -> None:
+        self.db.execute("DELETE FROM binding WHERE role='manager'")
+
     def is_manager(self, surface_uuid: str) -> bool:
         m = self.manager()
         return bool(m and m[0] == surface_uuid)
