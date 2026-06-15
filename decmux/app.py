@@ -295,13 +295,23 @@ def _toolbar(st: AppState) -> str:
 
 def repl(workspace_uuid: str, *, notify: bool = True) -> int:
     import shutil as _shutil
+    import sys as _sys
 
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import WordCompleter
     from prompt_toolkit.formatted_text import FormattedText
+    from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
     from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.keys import Keys
     from prompt_toolkit.patch_stdout import patch_stdout
     from prompt_toolkit.styles import Style
+
+    # A terminal only emits a distinct code for Shift+Enter under an enhanced
+    # keyboard protocol; we enable modifyOtherKeys level 1 below (backward
+    # compatible — other keys keep legacy codes). Teach prompt_toolkit to decode
+    # both the modifyOtherKeys and kitty Shift+Enter encodings.
+    for _seq in ("\x1b[27;2;13~", "\x1b[13;2u"):
+        ANSI_SEQUENCES[_seq] = Keys.F24
 
     st = AppState(Store(workspace_uuid))   # this thread's connection
     holder: dict = {}
@@ -325,6 +335,10 @@ def repl(workspace_uuid: str, *, notify: bool = True) -> int:
     def _(event):                       # Alt+Enter (Esc then Enter) inserts a newline
         event.current_buffer.insert_text("\n")
 
+    @kb.add(Keys.F24)
+    def _(event):                       # Shift+Enter, when the terminal reports it
+        event.current_buffer.insert_text("\n")
+
     def message():
         w = max(20, _shutil.get_terminal_size((80, 24)).columns)
         tag = f" #{st.thread}" if st.thread is not None else ""
@@ -333,8 +347,10 @@ def repl(workspace_uuid: str, *, notify: bool = True) -> int:
 
     style = Style.from_dict({"sep": "fg:#666666", "pr": "bold"})
     psession: PromptSession = PromptSession(multiline=True, key_bindings=kb, style=style)
+    _sys.stdout.write("\x1b[>4;1m")     # ask the terminal to report Shift+Enter (modifyOtherKeys L1)
+    _sys.stdout.flush()
     print(f"decmux — workspace {workspace_uuid}. supervising in the background.")
-    print("Enter sends · Alt+Enter for a newline · /help · /quit")
+    print("Enter sends · Shift+Enter / Alt+Enter for a newline · /help · /quit")
     _startup_guide(st.store)
     try:
         with patch_stdout():
@@ -350,6 +366,8 @@ def repl(workspace_uuid: str, *, notify: bool = True) -> int:
                     break
     finally:
         st.running = False
+        _sys.stdout.write("\x1b[>4;0m")   # restore the terminal's keyboard mode
+        _sys.stdout.flush()
         if holder.get("sess") is not None:
             holder["sess"].close()
     return 0

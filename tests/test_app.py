@@ -147,6 +147,21 @@ def test_completions_carry_descriptions(st):
     assert meta["manager"] and meta["human"]                # targets described
 
 
+def test_shift_enter_sequences_decode_to_one_key():
+    pytest.importorskip("prompt_toolkit")
+    from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+    from prompt_toolkit.input.vt100_parser import Vt100Parser
+    from prompt_toolkit.keys import Keys
+    for seq in ("\x1b[27;2;13~", "\x1b[13;2u"):     # modifyOtherKeys / kitty Shift+Enter
+        ANSI_SEQUENCES[seq] = Keys.F24
+    got: list = []
+    p = Vt100Parser(lambda kp: got.append(kp.key))
+    for seq in ("\x1b[27;2;13~", "\x1b[13;2u"):
+        p.feed(seq)
+    p.flush()
+    assert got == [Keys.F24, Keys.F24]              # both decode to the bound key
+
+
 def test_repl_end_to_end_quit(tmp_path, monkeypatch):
     """Drive the real prompt_toolkit loop over a pipe (no cmux, no real tty)."""
     pytest.importorskip("prompt_toolkit")
