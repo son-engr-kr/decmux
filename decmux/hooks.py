@@ -1,23 +1,26 @@
-"""Claude Code integration: a SessionStart hook that reloads the decmux skill.
+"""Claude Code integration: a SessionStart hook that injects the decmux protocol.
 
-The old prompt->task hooks proved too noisy (every agent prompt became a task), so
-they are not installed and any leftovers are removed. The SessionStart hook keeps
-the decmux skill fresh each session.
+No skill file is installed. The hook runs `decmux session-start`, which injects
+the protocol as `additionalContext` — but only for decmux-managed surfaces (a
+spawned agent has DECMUX_ROLE; a registered manager is found in its workspace
+store). Normal Claude sessions get nothing. The hook command is self-guarding
+(`command -v decmux ... || true`), so after `uv tool uninstall decmux` it is an
+inert no-op and nothing is left to clean up.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
-from . import assets
+from . import assets, cmux
 
 CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 _SESSION_MARKER = "decmux session-start"
-
-
-def _session_command() -> str:
-    return "decmux session-start"
+# self-guarding: a no-op when decmux is no longer installed
+_SESSION_COMMAND = "command -v decmux >/dev/null 2>&1 && decmux session-start || true"
 
 
 def _load() -> dict:
@@ -42,73 +45,50 @@ def _append(hooks: dict, event: str, command: str, marker: str, timeout: int) ->
     return True
 
 
-def _remove_matching(hooks: dict, event: str, needle: str) -> bool:
-    entries = hooks.get(event)
-    if not entries:
-        return False
-    kept = [e for e in entries
-            if not any(needle in h.get("command", "") for h in e.get("hooks", []))]
-    if len(kept) == len(entries):
-        return False
-    if kept:
-        hooks[event] = kept
-    else:
-        hooks.pop(event, None)
-    return True
-
-
 def install_session_hook() -> bool:
-    assets.ensure()
     data = _load()
     changed = _append(data.setdefault("hooks", {}), "SessionStart",
-                      _session_command(), _SESSION_MARKER, 10)
-    if changed:
-        _save(data)
-    return changed
-
-
-def uninstall_prompt_hooks() -> bool:
-    """Remove any legacy decmux UserPromptSubmit prompt->task hooks."""
-    if not CLAUDE_SETTINGS.exists():
-        return False
-    data = _load()
-    changed = _remove_matching(data.setdefault("hooks", {}), "UserPromptSubmit", "decmux")
+                      _SESSION_COMMAND, _SESSION_MARKER, 10)
     if changed:
         _save(data)
     return changed
 
 
 def install_all_hooks() -> dict:
-    removed = uninstall_prompt_hooks()
-    return {"session_hook": install_session_hook(), "removed_legacy_prompt": removed}
-
-
-def remove_hooks() -> dict:
-    """Remove decmux's Claude Code hooks (SessionStart + any legacy prompt hooks)."""
-    if not CLAUDE_SETTINGS.exists():
-        return {"session_removed": False, "prompt_removed": False}
-    data = _load()
-    hooks = data.setdefault("hooks", {})
-    session_removed = _remove_matching(hooks, "SessionStart", _SESSION_MARKER)
-    prompt_removed = _remove_matching(hooks, "UserPromptSubmit", "decmux")
-    if session_removed or prompt_removed:
-        _save(data)
-    return {"session_removed": session_removed, "prompt_removed": prompt_removed}
+    return {"session_hook": install_session_hook()}
 
 
 def claude_status() -> dict:
-    skill = assets.SKILLS_DIR / "SKILL.md"
     data = _load()
     return {
         "session_start_hook": _has_hook(data.get("hooks", {}).get("SessionStart", []),
                                         _SESSION_MARKER),
-        "skill": skill.exists(),
         "settings": str(CLAUDE_SETTINGS),
     }
 
 
+def _is_decmux_session() -> bool:
+    """True only for surfaces decmux manages — so we don't inject into normal sessions."""
+    if os.environ.get("DECMUX_ROLE"):           # decmux-spawned agent/manager
+        return True
+    try:                                         # a register-bound manager
+        c = cmux.run_json("identify", "--id-format", "both", "--json")["caller"]
+    except (subprocess.CalledProcessError, OSError, KeyError):
+        return False
+    ws, sid = c.get("workspace_id"), c.get("surface_id")
+    if not ws or not sid:
+        return False
+    from .store import Store, _root
+    if not (_root() / ws / "store.db").exists():   # don't create a store just to check
+        return False
+    return Store(ws).is_manager(sid)
+
+
 def session_start() -> int:
-    """SessionStart hook entry: refresh the skill and tell Claude to reload it."""
-    assets.ensure()
-    print(json.dumps({"reloadSkills": True}))
+    """SessionStart hook entry: inject the protocol for decmux sessions, else nothing."""
+    if _is_decmux_session():
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "SessionStart", "additionalContext": assets.PROTOCOL}}))
+    else:
+        print(json.dumps({}))
     return 0

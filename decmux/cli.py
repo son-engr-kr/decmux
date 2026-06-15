@@ -341,49 +341,48 @@ def cmd_session_start(args: argparse.Namespace) -> int:
     return hooks.session_start()
 
 
-def cmd_uninstall(args: argparse.Namespace) -> int:
-    """Remove decmux's installed integration (skill + cmux guard + Claude hook).
+def cmd_purge(args: argparse.Namespace) -> int:
+    """Delete decmux's stored data (this workspace by default, or --all).
 
-    Keeps your per-workspace data by default; pass --data to wipe that too. This
-    does not remove the `decmux` command itself — run `uv tool uninstall decmux`."""
-    a = assets.remove()
-    h = hooks.remove_hooks()
-    print("removed decmux integration:")
-    print(f"  skill (~/.claude/skills/decmux):        {'removed' if a['skill'] else 'absent'}")
-    print(f"  cmux guard ({assets.GUARD_DIR}): {'removed' if a['guard'] else 'absent'}")
-    print(f"  Claude SessionStart hook:               {'removed' if h['session_removed'] else 'absent'}")
-    if h["prompt_removed"]:
-        print("  (also removed leftover legacy prompt hooks)")
+    decmux only ever deletes data; removing the tool itself + its Claude hook is
+    `uv tool uninstall decmux` (the SessionStart hook self-guards to a no-op)."""
     root = store_mod._root()
-    if args.data:
+    if args.all:
         if root.exists():
             shutil.rmtree(root)
-            print(f"\n  --data: ALSO removed all workspace data: {root}")
+            print(f"removed ALL decmux data: {root}")
         else:
-            print(f"\n  --data: no data to remove ({root})")
+            print(f"no decmux data to remove ({root})")
+        return 0
+    ws = _ws_uuid(args)
+    d = root / ws
+    if d.exists():
+        shutil.rmtree(d)
+        print(f"removed data for this workspace: {d}")
     else:
-        print(f"\nkept your data: {root}")
-        print("  (per-workspace tasks, chat, goals, agent state — `decmux uninstall --data` to wipe)")
-    print("\nto remove the command itself:  uv tool uninstall decmux")
+        print(f"no data for this workspace ({d})")
     return 0
 
 
 def _setup_hint() -> None:
     """Nudge toward explicit setup, without writing global config on every run."""
-    if not (assets.SKILLS_DIR / "SKILL.md").exists():
-        print("tip: run `decmux setup` once to onboard agents "
-              "(installs the skill + Claude SessionStart hook).")
+    if not hooks.claude_status()["session_start_hook"]:
+        print("tip: run `decmux setup` once so agents learn the protocol "
+              "(installs a Claude SessionStart hook).")
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
-    """Install the agent integration: skill + cmux guard + Claude SessionStart hook."""
-    assets.ensure()
+    """Install the Claude SessionStart hook that injects the decmux protocol.
+
+    The protocol is injected only into decmux-managed sessions (no skill file).
+    The cmux guard is created on demand when you `decmux spawn` an agent. Undo by
+    removing the command itself: `uv tool uninstall decmux` (the hook self-guards
+    to a no-op once decmux is gone)."""
     res = hooks.install_all_hooks()
     print("decmux setup complete:")
-    print("  skill:                    ~/.claude/skills/decmux/SKILL.md")
-    print(f"  cmux guard:               {assets.GUARD_DIR}")
     print(f"  Claude SessionStart hook: {'installed' if res['session_hook'] else 'already present'}")
-    print("undo with: decmux uninstall")
+    print("  protocol is injected per-session for decmux surfaces (no skill file)")
+    print("\nto remove later:  uv tool uninstall decmux   (data: decmux purge)")
     return 0
 
 
@@ -504,9 +503,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("session-start", help="(Claude SessionStart hook) refresh + reload skill") \
         .set_defaults(func=cmd_session_start)
 
-    pu = sub.add_parser("uninstall", help="remove the skill + guard + Claude hook (keeps your data)")
-    pu.add_argument("--data", action="store_true", help="also delete all per-workspace data")
-    pu.set_defaults(func=cmd_uninstall)
+    pp = sub.add_parser("purge", help="delete decmux's stored data (this workspace, or --all)")
+    pp.add_argument("--all", action="store_true", help="delete data for every workspace")
+    pp.add_argument("--workspace")
+    pp.set_defaults(func=cmd_purge)
 
     return p
 

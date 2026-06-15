@@ -43,7 +43,7 @@ uv tool install git+https://github.com/son-engr-kr/decmux
 ## Use
 
 ```sh
-decmux setup           # once: install the agent skill + SessionStart hook (global)
+decmux setup           # once: install the Claude SessionStart hook (global)
 decmux                 # open the REPL for this workspace (supervises in the background)
 decmux register        # bind the current surface as this workspace's manager
 decmux goal "ship v1"  # set the goal; briefs the manager
@@ -64,25 +64,32 @@ decmux send "looked at the logs, root cause is X" --to manager
 decmux task done 12 "fixed and verified"
 ```
 
-Run `decmux setup` once to install the decmux skill + a Claude `SessionStart`
-hook (so agents learn the protocol). decmux-spawned agents also get a PATH guard
-that blocks raw `cmux` input so nothing bypasses the de-mixed channel. `decmux`
-and `decmux run` never write global config themselves — only `decmux setup` does,
-and `decmux uninstall` reverses it.
+Run `decmux setup` once to install a Claude `SessionStart` hook. The hook injects
+the decmux protocol into a session's context — but **only for decmux-managed
+surfaces** (a spawned agent carries `DECMUX_ROLE`; a registered manager is found
+in its workspace store), so your normal Claude sessions are untouched. There is
+**no skill file**. decmux-spawned agents also get a PATH guard that blocks raw
+`cmux` input. `decmux` and `decmux run` never write global config — only
+`decmux setup` does.
 
 ## Data & uninstall
 
 Your per-workspace state lives in `~/.local/state/decmux/<workspace-uuid>/`
-(SQLite: tasks, chat, goals, agent state; plus `files/`). The installed
-integration lives elsewhere: the skill in `~/.claude/skills/decmux/`, a
-`SessionStart` hook in `~/.claude/settings.json`, and the cmux-send guard in
-`~/.local/share/decmux/bin/`.
+(SQLite: tasks, chat, goals, agent state; plus `files/`). The only installed
+global artifacts are the `SessionStart` hook in `~/.claude/settings.json` and the
+on-demand cmux-send guard in `~/.local/share/decmux/bin/`.
 
 ```sh
-decmux uninstall          # remove the skill + hook + guard, KEEP your data
-decmux uninstall --data   # also wipe all per-workspace data
-uv tool uninstall decmux  # remove the command itself (leaves data + config)
+uv tool uninstall decmux  # THE uninstall: removes the command. The SessionStart
+                          # hook self-guards (`command -v decmux ... || true`), so
+                          # once decmux is gone it is an inert no-op — nothing to
+                          # clean up, no skill file to orphan.
+
+decmux purge              # delete this workspace's data
+decmux purge --all        # delete all workspaces' data
 ```
+
+decmux itself only ever deletes data (`purge`); removing the tool is uv's job.
 
 ## Develop
 

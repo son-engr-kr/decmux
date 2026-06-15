@@ -112,8 +112,8 @@ Carried over from the old code, largely intact (these encode the value):
 | `store.py` → `store.py` | SQLite store — **simplified to single-workspace** (drop `ws` columns) |
 | `bus.py` → `bus.py` | message routing, de-mix delivery, outbox, human-gate, task lifecycle |
 | `policy.py` → `policy.py` | auto-vs-escalate decision policy |
-| `assets.py` → `assets.py` | decmux skill + cmux-send guard |
-| `codex_hook.py` → `hooks.py` | agent prompt/session hooks (prompt→task off by default) |
+| `assets.py` → `assets.py` | the protocol text + cmux-send guard (no skill file) |
+| `codex_hook.py` → `hooks.py` | the SessionStart protocol-injection hook |
 | `config.py` → `config.py` | per-workspace config (simplified) |
 
 New:
@@ -225,3 +225,14 @@ The full mined list (62 items) is the reference; the load-bearing ones:
 - **Threading:** the REPL runs supervision and a store-tailing feed poller in
   background threads; each thread holds its own `Store` connection (SQLite in WAL
   mode + busy timeout) since connections are not shared across threads.
+- **Agent protocol delivery: SessionStart `additionalContext`, not a skill file.**
+  `decmux setup` installs one self-guarding Claude `SessionStart` hook
+  (`command -v decmux ... || true`). On each session the hook runs
+  `decmux session-start`, which injects the protocol as `additionalContext` —
+  but only for decmux-managed surfaces (a spawned agent carries `DECMUX_ROLE`; a
+  registered manager is found in its workspace store, checked without creating
+  one). Chosen over a `~/.claude/skills` file because it is (a) always in context
+  every session, not consulted-when-relevant; (b) scoped, so normal Claude
+  sessions are never polluted; and (c) orphan-free — `uv tool uninstall decmux`
+  is the whole uninstall (the hook self-guards to a no-op), and decmux's own
+  destructive verb is data-only (`decmux purge`).

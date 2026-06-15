@@ -1,30 +1,25 @@
-"""Self-install of decmux's Claude Code assets: the manager skill + the cmux guard.
+"""The decmux agent protocol (injected via the SessionStart hook) + the cmux guard.
 
-`ensure()` writes the bundled SKILL.md into ~/.claude/skills/decmux/ (idempotent,
-version-stamped) so a Claude agent learns the decmux protocol with no setup.
-`guarded_command()` wraps an agent launch so raw `cmux send`/input is blocked and
-must go through `decmux send` (the de-mixing guarantee).
+decmux does NOT install a persistent ~/.claude/skills file. The protocol is
+injected into a session's context by the SessionStart hook (hooks.session_start),
+and only for decmux-managed surfaces — so normal Claude sessions are untouched,
+and uninstalling decmux leaves no on-disk skill to orphan. The cmux guard is
+created on demand when decmux spawns an agent.
 """
 
 from __future__ import annotations
 
 import re
 import shlex
-import shutil
 from pathlib import Path
 
-from . import __version__, cmux
+from . import cmux
 
 GUARD_DIR = Path.home() / ".local" / "share" / "decmux" / "bin"
 GUARD_CMUX = GUARD_DIR / "cmux"
-SKILLS_DIR = Path.home() / ".claude" / "skills" / "decmux"
-STAMP = SKILLS_DIR / ".version"
 
-SKILL_MD = """---
-name: decmux
-description: Operate under decmux for this cmux workspace — route all messages through decmux (not raw cmux send), respond to its pokes, and drive it via the decmux CLI.
----
-# decmux — agent + manager protocol
+# Injected verbatim into a decmux-managed session's context by the SessionStart hook.
+PROTOCOL = """# decmux — agent + manager protocol
 
 decmux is the control plane watching every agent in this workspace. It classifies
 each agent (working / idle / stuck / error / budget / blocked-on-decision), logs a
@@ -152,32 +147,3 @@ def guarded_command(command: str, *, env: dict[str, str] | None = None,
     if cwd:
         cmd = f"cd {shlex.quote(str(cwd))} && {cmd}"
     return cmd
-
-
-def ensure(force: bool = False) -> bool:
-    """Write SKILL.md into ~/.claude/skills/decmux/ when missing/stale (idempotent)."""
-    _ensure_cmux_guard()
-    skill = SKILLS_DIR / "SKILL.md"
-    stamp = STAMP.read_text() if STAMP.exists() else ""
-    current = skill.read_text() if skill.exists() else ""
-    if not force and stamp == __version__ and current == SKILL_MD:
-        return False
-    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
-    skill.write_text(SKILL_MD)
-    STAMP.write_text(__version__)
-    return True
-
-
-def remove() -> dict:
-    """Delete the installed skill and the cmux guard. Leaves workspace data alone."""
-    out = {"skill": False, "guard": False}
-    if SKILLS_DIR.exists():
-        shutil.rmtree(SKILLS_DIR)
-        out["skill"] = True
-    if GUARD_DIR.exists():
-        shutil.rmtree(GUARD_DIR)
-        out["guard"] = True
-        parent = GUARD_DIR.parent          # ~/.local/share/decmux
-        if parent.exists() and not any(parent.iterdir()):
-            parent.rmdir()
-    return out
