@@ -55,7 +55,7 @@ def _completions(store) -> tuple[list[str], dict[str, str]]:
         meta.setdefault(n, "agent")
     return words, meta
 
-HELP = """commands:  (Enter sends · Alt+Enter for a newline)
+HELP = """commands:  (Enter sends · Shift+Enter or Alt+Enter = newline)
   <text>            send to target; to the manager it continues the current thread
   /new [text]       start a new thread (fresh task)
   /task <id>        focus a task thread + show its timeline
