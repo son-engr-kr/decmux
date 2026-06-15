@@ -21,6 +21,34 @@ from . import session as session_mod
 from .store import Store
 
 _COMMANDS = ["/to", "/status", "/tasks", "/feed", "/report", "/goal", "/help", "/quit"]
+_TARGETS = ["manager", "you", "all"]
+
+# shown beside each completion (prompt_toolkit display_meta) when it is focused
+_CMD_META = {
+    "/to": "set message target (manager | you | <agent> | all)",
+    "/status": "agent states (from the supervisor)",
+    "/tasks": "open tasks",
+    "/feed": "recent human-facing chat  (/feed N)",
+    "/report": "recent state transitions  (/report N)",
+    "/goal": "set the workspace goal (briefs the manager)",
+    "/help": "list commands",
+    "/quit": "exit (supervision stops)",
+}
+_TARGET_META = {
+    "manager": "the bound manager",
+    "you": "the human (refined updates only)",
+    "all": "broadcast to all agents",
+}
+
+
+def _completions(store) -> tuple[list[str], dict[str, str]]:
+    """Completion words + their descriptions (commands, targets, live agent names)."""
+    names = [bus._clean_name(a["title"]) for a in store.list_agents()]
+    words = _COMMANDS + _TARGETS + names
+    meta = {**_CMD_META, **_TARGET_META}
+    for n in names:
+        meta.setdefault(n, "agent")
+    return words, meta
 
 HELP = """commands:
   <text>            send to the current target (default: manager)
@@ -171,9 +199,8 @@ def repl(workspace_uuid: str, *, notify: bool = True) -> int:
     try:
         with patch_stdout():
             while True:
-                names = [bus._clean_name(a["title"]) for a in st.store.list_agents()]
-                completer = WordCompleter(_COMMANDS + names + ["manager", "you", "all"],
-                                          sentence=True)
+                words, meta = _completions(st.store)
+                completer = WordCompleter(words, meta_dict=meta, sentence=True)
                 try:
                     line = psession.prompt(f"decmux[{st.target}]> ",
                                            completer=completer,

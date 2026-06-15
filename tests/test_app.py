@@ -46,6 +46,14 @@ def test_toolbar_renders(st):
     assert "decmux" in bar and "->manager" in bar
 
 
+def test_completions_carry_descriptions(st):
+    st.store.upsert_state(surface_uuid="a", surface_ref="surface:1", title="worker", state="idle")
+    words, meta = app._completions(st.store)
+    assert "/status" in words and meta["/status"]          # command has a description
+    assert "worker" in words and meta["worker"] == "agent"  # live agent name + meta
+    assert meta["manager"] and meta["you"]                  # targets described
+
+
 def test_repl_end_to_end_quit(tmp_path, monkeypatch):
     """Drive the real prompt_toolkit loop over a pipe (no cmux, no real tty)."""
     pytest.importorskip("prompt_toolkit")
