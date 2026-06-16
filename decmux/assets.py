@@ -51,6 +51,8 @@ one-line pointer, batched with other updates — the manager pulls detail on dem
 So put the full result where it is pulled from: in the task
 (`decmux task done <id> "<full result>"` / `decmux task comment <id> "<detail>"`).
 You need not also cram the whole thing into a send; a concise pointer is enough.
+Exception: a question, a decision request, or a block reaches the manager in full
+and promptly (not batched) — so when you need a call, ask plainly.
 
 decmux-spawned agents run with a cmux guard in PATH: raw `cmux send`, `send-key`,
 and input RPCs are blocked. `decmux send` is the supported path.
@@ -71,10 +73,12 @@ and input RPCs are blocked. `decmux send` is the supported path.
   (`decmux task answer <id> "<answer>"`), or dismiss
   (`decmux task done <id> "no action needed"`). decmux reminds you until each is
   resolved, so nothing the human says is dropped.
-- Subordinate reports reach you as a batched `[decmux · N team updates]` digest —
-  one pointer line each, not full text. decmux holds the detail; pull it as you act
-  on each: `decmux task show <id>` for the thread, `decmux report` for recent
-  activity. Do not wait for a worker's full message inline; it will not arrive so.
+- Routine subordinate reports reach you as a batched `[decmux · N team updates]`
+  digest — one pointer line each, not full text. decmux holds the detail; pull it
+  as you act on each: `decmux task show <id>` for the thread, `decmux report` for
+  recent activity. A subordinate's question / decision request / block arrives in
+  full and promptly (not in the digest) — act on those directly. Do not wait for a
+  routine worker message inline; it will not arrive that way.
 - A `[decmux human-gate ...]` line means a subordinate tried to reach the human;
   decide internally, forward only if a human decision is truly needed.
 - The goal arrives as `[decmux goal ...]` — operating context for triage and

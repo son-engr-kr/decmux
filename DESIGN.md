@@ -189,7 +189,10 @@ The full mined list (62 items) is the reference; the load-bearing ones:
   `decmux task show <id>` / `decmux report`. This keeps the manager's context lean
   over a long horizon — the headline advantage over a raw in-session LLM subagent,
   which dumps every child's full result back into the parent's window. Human
-  follow-ups, goals, and downward commands are exempt (delivered in full).
+  follow-ups, goals, and downward commands are exempt (delivered in full). So is an
+  **urgent report-up** — a subordinate's question, decision request, or block
+  (`_is_urgent_report`, EN/KO) skips the digest and is delivered verbatim and
+  prioritized, so a real ask is never buried in a batch.
 - **Sender content first, then a `---  — decmux (system) —` separator,** then
   decmux's instructions, so the recipient can tell them apart.
 - **Manager human-gate.** Only the human and the bound manager may message

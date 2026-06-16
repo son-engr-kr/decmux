@@ -374,6 +374,27 @@ def _is_report_up(frm: str) -> bool:
     return frm.strip().lower() not in _NON_REPORTERS
 
 
+# A subordinate's report that needs PROMPT manager action — a question, a decision
+# request, or a block — bypasses the lean digest and is delivered in full, so the
+# manager acts on it with context instead of seeing a one-line pointer buried in a
+# batch. Conservative & bilingual (EN/KO); over-triggering merely sends one message
+# in full, under-triggering would bury a real ask. Routine progress stays a digest.
+_URGENT_SIGNAL = re.compile(
+    r"\?\s*$"                                          # a direct question
+    r"|\b(?:blocked|stuck|can'?t|cannot|unable|decide|decision|which|should\s+i|"
+    r"approve|approv(?:al|ed)|confirm|permission|"
+    r"need(?:s)?\s+(?:a\s+)?(?:decision|input|approval|review|help|you))\b"
+    r"|막혔|막힘|결정|선택|승인|허가|확인\s*필요|검토\s*필요|도와|도움|"
+    r"어떻게\s*할|할까요|해야\s*할까|어느\s*것|골라",
+    re.I | re.M,
+)
+
+
+def _is_urgent_report(text: str) -> bool:
+    """A report-up that should reach the manager in full and promptly."""
+    return bool(_URGENT_SIGNAL.search((text or "").strip()))
+
+
 def _report_pointer(frm: str, *, task_id: int | None = None,
                     kind: str = "", text: str = "") -> str:
     """One compact line summarizing a report-up, for the manager's digest."""
@@ -411,12 +432,15 @@ def deliver_task_update(store, task: dict, *, kind: str, body: str, author: str)
     """Push a task update to the manager. A subordinate's update travels up as a lean
     pointer (collapsed into a digest on idle flush); a human follow-up or a manager's
     own comment is delivered in full, with a thread re-brief for an old task."""
-    if _is_report_up(author):
+    report_up = _is_report_up(author)
+    if report_up and not _is_urgent_report(body):
         rowid = enqueue_digest(
             store, _report_pointer(author, task_id=int(task["id"]), kind=kind, text=body),
             frm=author)
         return {"delivered": 0, "queued": 1 if rowid else 0, "digest": True}
-    targets = _task_update_targets(store, task)
+    # An urgent report-up (question / decision / block) goes to the manager in full
+    # so it can act promptly; a non-report update fans out to the task owner too.
+    targets = _targets(store, "manager") if report_up else _task_update_targets(store, task)
     ws_ref = _ws_ref(store)
     message = (
         f"[decmux task #{task['id']} {kind} | from {author}]\n\n"
@@ -572,9 +596,11 @@ def send(store, text: str, to: str = "manager", frm: str | None = None,
         return {"frm": frm, "dst": to, "requested_dst": requested_to,
                 "delivered": 0, "queued": 0, "task": tid, "closed_task": closed_task,
                 "gated_to_manager": gated_to_manager}
-    # Report-up: a subordinate's plain message to the manager travels as a lean
-    # digest pointer; the full text is already in the chat log (pull: decmux report).
-    if to.strip().lower() == "manager" and _is_report_up(frm) and not gated_to_manager and not tid:
+    # Report-up: a subordinate's routine message to the manager travels as a lean
+    # digest pointer (full text stays in the chat log; pull: decmux report). An
+    # urgent one (question / decision / block) falls through to verbatim delivery.
+    if (to.strip().lower() == "manager" and _is_report_up(frm)
+            and not gated_to_manager and not tid and not _is_urgent_report(text)):
         rowid = enqueue_digest(store, _report_pointer(frm, text=text), frm=frm)
         store.commit()
         return {"frm": frm, "dst": to, "requested_dst": requested_to,

@@ -286,3 +286,33 @@ def test_flush_delivers_verbatim_before_digest(s, recorder):
 def test_report_up_dropped_when_no_manager(s):
     # no manager bound -> the pointer has nowhere to go (matches send-with-no-target)
     assert bus.enqueue_digest(s, "#1 done · w1 — x", frm="w1") == 0
+
+
+def test_urgent_report_classifier():
+    assert bus._is_urgent_report("should I use A or B?") is True
+    assert bus._is_urgent_report("I'm blocked on the migration") is True
+    assert bus._is_urgent_report("결정해줘 A 아니면 B로 갈까요") is True
+    assert bus._is_urgent_report("막혔어, 권한이 없어") is True
+    assert bus._is_urgent_report("refactored the parser, tests pass") is False
+    assert bus._is_urgent_report("patched token expiry and verified") is False
+
+
+def test_urgent_worker_send_delivered_verbatim(s, recorder):
+    # a question/decision/block from a worker bypasses the lean digest
+    add_agent(s, uuid="m1", ref="surface:9", name="manager", state="idle")
+    s.bind_manager(surface_uuid="m1", surface_ref="surface:9", cwd="/x")
+    res = bus.send(s, "should I drop the legacy column?", to="manager", frm="worker")
+    assert res["delivered"] == 1                      # verbatim, not a queued pointer
+    assert recorder and "should I drop" in recorder[0][1]
+    assert not any(r["digest"] for r in s.pending_outbox("m1"))
+
+
+def test_urgent_task_comment_delivered_full(s, recorder):
+    add_agent(s, uuid="m1", ref="surface:9", name="manager", state="idle")
+    s.bind_manager(surface_uuid="m1", surface_ref="surface:9", cwd="/x")
+    tid = s.add_task(kind="command", body="migrate db", to_whom="worker")
+    res = bus.deliver_task_update(s, s.get_task(tid), kind="comment",
+                                  body="which index should I use?", author="worker")
+    assert res.get("digest") is None and res["delivered"] == 1
+    assert "which index" in recorder[-1][1]           # full text reached the manager
+    assert not any(r["digest"] for r in s.pending_outbox("m1"))
