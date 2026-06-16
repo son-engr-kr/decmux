@@ -660,6 +660,49 @@ class Store:
         ).fetchone()
         return dict(r)
 
+    # decmux's usage signal is ACTIVITY (turns = Stop hooks, tools = PreToolUse), not
+    # tokens — it has no view of Claude's token/limit. These power the trend graph and
+    # the at-this-rate projection over the rolling 5h window.
+    _USAGE_KINDS = "('agent.hook.Stop','agent.hook.PreToolUse')"
+
+    def usage_window(self, hours: float = 5.0, now: float | None = None) -> dict:
+        """Turns/tools within the rolling window ending now."""
+        now = now if now is not None else time.time()
+        r = self.db.execute(
+            f"""SELECT SUM(kind='agent.hook.Stop')      AS turns,
+                       SUM(kind='agent.hook.PreToolUse') AS tools,
+                       MIN(ts) AS first_ts
+                FROM events WHERE ts>=? AND kind IN {self._USAGE_KINDS}""",
+            (now - hours * 3600,),
+        ).fetchone()
+        return {"turns": r["turns"] or 0, "tools": r["tools"] or 0,
+                "first_ts": r["first_ts"], "hours": hours, "now": now}
+
+    def usage_series(self, hours: float = 5.0, buckets: int = 40,
+                     now: float | None = None) -> list[int]:
+        """Per-bucket activity counts across the window (oldest..newest), for a graph."""
+        now = now if now is not None else time.time()
+        start = now - hours * 3600
+        width = (hours * 3600) / buckets
+        counts = [0] * buckets
+        for r in self.db.execute(
+            f"SELECT ts FROM events WHERE ts>=? AND kind IN {self._USAGE_KINDS}", (start,)
+        ):
+            counts[min(buckets - 1, int((r["ts"] - start) / width))] += 1
+        return counts
+
+    def usage_rate(self, minutes: float = 30.0, now: float | None = None) -> dict:
+        """Recent turns/tools per hour (the basis for the projection)."""
+        now = now if now is not None else time.time()
+        r = self.db.execute(
+            f"""SELECT SUM(kind='agent.hook.Stop')      AS turns,
+                       SUM(kind='agent.hook.PreToolUse') AS tools
+                FROM events WHERE ts>=? AND kind IN {self._USAGE_KINDS}""",
+            (now - minutes * 60,),
+        ).fetchone()
+        hrs = minutes / 60.0
+        return {"turns_per_hr": (r["turns"] or 0) / hrs, "tools_per_hr": (r["tools"] or 0) / hrs}
+
     # --- feed decisions ---
     def add_decision(self, *, request_id, kind, hook_event, tool_name,
                      disposition, status="pending", now=None) -> None:

@@ -22,7 +22,7 @@ from . import session as session_mod
 from .store import Store
 
 _COMMANDS = ["/spawn-manager", "/spawn", "/despawn", "/goal", "/to", "/status", "/tasks",
-             "/task", "/new", "/feed", "/report", "/help", "/quit"]
+             "/task", "/new", "/feed", "/report", "/usage", "/help", "/quit"]
 _TARGETS = ["manager", "human", "all"]
 
 # shown beside each completion (prompt_toolkit display_meta) when it is focused
@@ -38,6 +38,7 @@ _CMD_META = {
     "/new": "start a new thread (fresh task)  (/new [text])",
     "/feed": "recent human-facing chat  (/feed N)",
     "/report": "recent state transitions  (/report N)",
+    "/usage": "5h activity trend (sparkline) + at-this-rate projection",
     "/help": "list commands",
     "/quit": "exit (supervision stops)",
 }
@@ -70,6 +71,7 @@ HELP = """commands:  (Enter sends · Shift+Enter or Alt+Enter = newline)
   /status           agent states (from the supervisor)
   /feed [n]         recent human-facing chat
   /report [n]       recent state transitions
+  /usage            5h activity trend + at-this-rate projection
   /help  /quit"""
 
 _GLYPH = {"working": "●", "idle": "○", "stuck": "▲", "error": "✖",
@@ -129,6 +131,18 @@ def _render_message(frm: str, body: str, dst: str | None = None) -> None:
     print(head)
     for ln in (body or "").splitlines() or [""]:
         print(_gray(" │ ") + ln)
+
+
+_SPARK = "▁▂▃▄▅▆▇█"
+
+
+def _spark(values: list[int]) -> str:
+    if not values:
+        return ""
+    mx = max(values)
+    if not mx:
+        return "·" * len(values)
+    return "".join("·" if v == 0 else _SPARK[min(7, int(v / mx * 7 + 0.5))] for v in values)
 
 
 class AppState:
@@ -366,6 +380,24 @@ def _report(store, n: int) -> None:
               + _dim(bus._clean_name(t["title"] or "")))
 
 
+def _usage(store) -> None:
+    w = store.usage_window(hours=5.0)
+    counts = store.usage_series(hours=5.0, buckets=40)
+    rate = store.usage_rate(minutes=30.0)
+    print(_b("  usage — rolling 5h")
+          + _gray("   (activity: turns = agent turns, tools = tool calls)"))
+    print("  " + _cyan(_spark(counts)) + _gray("   oldest → now"))
+    print(_gray(f"  window so far: {w['turns']} turns · {w['tools']} tool calls"))
+    tph, oph = rate["turns_per_hr"], rate["tools_per_hr"]
+    if tph or oph:
+        print(_gray(f"  recent rate (30m): {tph:.0f} turns/hr · {oph:.0f} tools/hr"))
+        print("  " + _yel(f"→ at this rate, a full 5h session ≈ "
+                          f"{tph * 5:.0f} turns · {oph * 5:.0f} tool calls"))
+    else:
+        print(_gray("  (no activity in the last 30m)"))
+    print(_gray("  (activity trend — not Claude's token limit; % of the 5h cap is coming)"))
+
+
 def _handle(st: AppState, line: str) -> bool:
     """Process one input line. Returns False to quit."""
     line = line.strip()
@@ -412,6 +444,8 @@ def _handle(st: AppState, line: str) -> bool:
             _feed(st.store, _int(rest, 20))
         elif cmd == "report":
             _report(st.store, _int(rest, 20))
+        elif cmd == "usage":
+            _usage(st.store)
         elif cmd in ("goal", "loop"):
             # /goal IS the autonomous loop: set it and decmux drives the team toward
             # it (momentum nudges when idle; the toolbar shows the next wakeup).

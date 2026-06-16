@@ -144,3 +144,19 @@ def test_writes_autocommit_visible_across_connections(tmp_path):
     b = Store("ws-test", root=tmp_path)
     assert b.get_meta("k") == "v"
     assert b.is_managed("u1")
+
+
+def test_usage_series_window_and_rate(tmp_path):
+    import time
+    s = Store("ws-test", root=tmp_path)
+    now = time.time()
+    for _ in range(5):
+        s.log_event(kind="agent.hook.Stop", now=now - 120)        # 5 turns, 2m ago
+    s.log_event(kind="agent.hook.PreToolUse", now=now - 120)        # 1 tool
+    s.log_event(kind="agent.hook.Stop", now=now - 6 * 3600)         # outside 5h window
+    s.commit()
+    assert sum(s.usage_series(hours=5.0, buckets=10, now=now)) == 6  # old one excluded
+    w = s.usage_window(hours=5.0, now=now)
+    assert w["turns"] == 5 and w["tools"] == 1
+    r = s.usage_rate(minutes=30.0, now=now)
+    assert r["turns_per_hr"] == 10.0 and r["tools_per_hr"] == 2.0   # 5 turns / 0.5h

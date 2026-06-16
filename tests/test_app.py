@@ -210,3 +210,21 @@ def test_repl_end_to_end_quit(tmp_path, monkeypatch):
 
     tasks = Store("ws-test", root=tmp_path).list_tasks()
     assert any(t["body"] == "hello manager" for t in tasks)
+
+
+def test_usage_renders_trend_and_projection(st, capsys):
+    import time
+    now = time.time()
+    for _ in range(3):
+        st.store.log_event(kind="agent.hook.Stop", now=now - 300)
+    st.store.commit()
+    app._usage(st.store)
+    out = capsys.readouterr().out
+    assert "usage" in out and "5h" in out and "turns" in out
+
+
+def test_spark_scales_and_handles_empty():
+    assert app._spark([]) == ""
+    assert app._spark([0, 0, 0]) == "···"
+    sp = app._spark([0, 1, 8])
+    assert len(sp) == 3 and sp[0] == "·" and sp[-1] == "█"
