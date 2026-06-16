@@ -1,6 +1,6 @@
 [project]
 name = "decmux"
-version = "0.2.6"
+version = "0.2.7"
 description = "Per-workspace, foreground control plane for cmux-hosted AI coding agents"
 requires-python = ">=3.12"
 dependencies = [
