@@ -45,6 +45,13 @@ must report via send, include the marker, e.g.
 `decmux send "[AGENT-DONE task #123] implemented and verified" --to manager`, and
 decmux auto-closes that task as a safety net.
 
+When you report UP to the manager (a `--to manager` send, or task done/comment/
+answer), decmux keeps your full text in the durable store and shows the manager a
+one-line pointer, batched with other updates — the manager pulls detail on demand.
+So put the full result where it is pulled from: in the task
+(`decmux task done <id> "<full result>"` / `decmux task comment <id> "<detail>"`).
+You need not also cram the whole thing into a send; a concise pointer is enough.
+
 decmux-spawned agents run with a cmux guard in PATH: raw `cmux send`, `send-key`,
 and input RPCs are blocked. `decmux send` is the supported path.
 
@@ -64,6 +71,10 @@ and input RPCs are blocked. `decmux send` is the supported path.
   (`decmux task answer <id> "<answer>"`), or dismiss
   (`decmux task done <id> "no action needed"`). decmux reminds you until each is
   resolved, so nothing the human says is dropped.
+- Subordinate reports reach you as a batched `[decmux · N team updates]` digest —
+  one pointer line each, not full text. decmux holds the detail; pull it as you act
+  on each: `decmux task show <id>` for the thread, `decmux report` for recent
+  activity. Do not wait for a worker's full message inline; it will not arrive so.
 - A `[decmux human-gate ...]` line means a subordinate tried to reach the human;
   decide internally, forward only if a human decision is truly needed.
 - The goal arrives as `[decmux goal ...]` — operating context for triage and
@@ -72,8 +83,10 @@ and input RPCs are blocked. `decmux send` is the supported path.
   then `decmux task delegate <id> <role> "<instruction>"`. Keep the team small.
 
 ## Verbs
-- `decmux status [--json]` — every agent's state.  `decmux report` — recent timeline.
-- `decmux task add|list|comment|done|answer|delegate|reopen|wait` — the issue queue.
+- `decmux status [--json]` — every agent's state.  `decmux report` — recent
+  transitions + messages (the detail behind a digest pointer).
+- `decmux task add|list|show|comment|done|answer|delegate|reopen|wait` — the issue
+  queue. `decmux task show <id>` prints one task's full thread.
 - `decmux goal "<text>"` — set the workspace goal (briefs the manager).
 - `decmux spawn [--name N] [--kind claude|codex] [--manager]` — new agent in its own surface.
 - `decmux register` — bind yourself (caller surface) as this workspace's manager.

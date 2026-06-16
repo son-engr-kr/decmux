@@ -210,3 +210,79 @@ def test_send_human_gate_reroutes_to_manager(s, recorder):
     assert res["gated_to_manager"] is True
     assert res["delivered"] == 1                      # reached the manager, not the human
     assert recorder and "human-gate" in recorder[0][1]
+
+
+# --- report-up: subordinate news travels to the manager as a lean digest ---
+
+def test_is_report_up_classifier():
+    assert bus._is_report_up("worker-7") is True
+    for nonreporter in ("human", "you", "manager", "decmux", ""):
+        assert bus._is_report_up(nonreporter) is False
+
+
+def test_task_close_from_worker_digests_to_manager(s, recorder):
+    add_agent(s, uuid="m1", ref="surface:9", name="manager", state="idle")
+    s.bind_manager(surface_uuid="m1", surface_ref="surface:9", cwd="/x")
+    tid = s.add_task(kind="command", body="fix login bug", to_whom="worker")
+    res = bus.deliver_task_update(s, s.get_task(tid), kind="done",
+                                  body="patched token expiry and verified", author="worker")
+    assert res["digest"] is True and res["queued"] == 1
+    assert recorder == []                               # never typed inline; queued for the digest
+    pending = s.pending_outbox("m1")
+    assert pending and pending[0]["digest"] == 1
+    body = pending[0]["body"]
+    assert f"#{tid}" in body and "done" in body and "worker" in body
+    assert "patched token expiry" in body               # short snippet only
+    assert "Original request" not in body               # not the full re-brief
+
+
+def test_human_followup_still_full_to_manager(s, recorder):
+    # a human follow-up is NOT report-up: the manager must see it in full
+    add_agent(s, uuid="m1", ref="surface:9", name="manager", state="idle")
+    s.bind_manager(surface_uuid="m1", surface_ref="surface:9", cwd="/x")
+    tid = s.add_task(kind="command", body="fix login bug", to_whom="manager")
+    res = bus.deliver_task_update(s, s.get_task(tid), kind="comment",
+                                  body="any update?", author="human")
+    assert res.get("digest") is None and res["delivered"] == 1
+    assert "fix login bug" in recorder[-1][1]           # full re-brief delivered
+
+
+def test_send_worker_to_manager_digests(s, recorder):
+    add_agent(s, uuid="m1", ref="surface:9", name="manager", state="idle")
+    s.bind_manager(surface_uuid="m1", surface_ref="surface:9", cwd="/x")
+    res = bus.send(s, "the parser is refactored and tests pass", to="manager", frm="worker")
+    assert res["delivered"] == 0 and res["queued"] == 1
+    assert recorder == []
+    pending = s.pending_outbox("m1")
+    assert pending and pending[0]["digest"] == 1 and "worker" in pending[0]["body"]
+
+
+def test_flush_collapses_team_digests(s, recorder):
+    add_agent(s, uuid="m1", ref="surface:9", name="manager", state="idle")
+    s.bind_manager(surface_uuid="m1", surface_ref="surface:9", cwd="/x")
+    for p in ("#1 done · w1 — a", "#2 update · w2 — b", "msg · w3 — c"):
+        bus.enqueue_digest(s, p, frm="w")
+    sent = bus.flush_outbox(s, "m1", "surface:9", "")
+    assert sent == 1 and len(recorder) == 1             # three pointers -> one message
+    msg = recorder[0][1]
+    assert "3 team updates" in msg
+    assert "w1" in msg and "w2" in msg and "w3" in msg
+    assert not s.pending_outbox("m1")                   # all marked delivered
+
+
+def test_flush_delivers_verbatim_before_digest(s, recorder):
+    add_agent(s, uuid="m1", ref="surface:9", name="manager", state="idle")
+    s.bind_manager(surface_uuid="m1", surface_ref="surface:9", cwd="/x")
+    s.enqueue_outbox(surface_uuid="m1", surface_ref="surface:9", body="VERBATIM TRIAGE", frm="human")
+    bus.enqueue_digest(s, "#5 done · w1 — x", frm="w1")
+    assert bus.flush_outbox(s, "m1", "surface:9", "") == 1
+    assert recorder[-1][1] == "VERBATIM TRIAGE"          # command-class mail goes first
+    pend = s.pending_outbox("m1")
+    assert len(pend) == 1 and pend[0]["digest"] == 1     # digest still waiting
+    assert bus.flush_outbox(s, "m1", "surface:9", "") == 1
+    assert "team update" in recorder[-1][1]
+
+
+def test_report_up_dropped_when_no_manager(s):
+    # no manager bound -> the pointer has nowhere to go (matches send-with-no-target)
+    assert bus.enqueue_digest(s, "#1 done · w1 — x", frm="w1") == 0

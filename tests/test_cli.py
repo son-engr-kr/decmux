@@ -62,6 +62,40 @@ def test_answer_to_human_task_surfaces_to_repl(wired, monkeypatch):
     assert any(c["frm"] == "manager" and "yes, all green" in c["body"] for c in chats)
 
 
+def test_task_show_prints_thread(wired, capsys):
+    s = store(wired)
+    tid = s.add_task(kind="command", body="build the parser", to_whom="worker")
+    s.task_progress(tid, "started analysis", author="worker")
+    s.commit()
+    capsys.readouterr()
+    assert cli.main(["task", "show", str(tid)]) == 0
+    out = capsys.readouterr().out
+    assert "build the parser" in out and "started analysis" in out and "timeline" in out
+
+
+def test_report_surfaces_recent_messages(wired, capsys):
+    s = store(wired)
+    s.add_chat(frm="worker-7", dst="manager", body="parser refactored, tests pass", kind="report")
+    s.commit()
+    capsys.readouterr()
+    assert cli.main(["report"]) == 0
+    out = capsys.readouterr().out
+    assert "recent messages" in out and "parser refactored" in out
+
+
+def test_worker_task_done_digests_to_manager(wired, monkeypatch):
+    s = store(wired)
+    s.upsert_state(surface_uuid="m1", surface_ref="surface:9", title="manager", state="idle")
+    s.bind_manager(surface_uuid="m1", surface_ref="surface:9", cwd="/x")
+    tid = s.add_task(kind="command", body="fix bug", to_whom="worker")
+    s.commit()
+    monkeypatch.setattr(bus, "resolve_sender", lambda store: "worker-7")
+    assert cli.main(["task", "done", str(tid), "patched", "and", "verified"]) == 0
+    pend = store(wired).pending_outbox("m1")
+    assert pend and pend[0]["digest"] == 1
+    assert f"#{tid}" in pend[0]["body"] and "worker-7" in pend[0]["body"]
+
+
 def test_parser_defaults_to_app():
     args = cli.build_parser().parse_args([])
     assert args.func is cli.cmd_app   # no-arg `decmux` opens the interactive REPL

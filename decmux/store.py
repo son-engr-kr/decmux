@@ -111,7 +111,8 @@ class Store:
 
     def _migrate(self) -> None:
         """Additive column migrations for stores created before a column existed."""
-        for table, col, decl in [("managed", "kind", "TEXT")]:
+        for table, col, decl in [("managed", "kind", "TEXT"),
+                                 ("outbox", "digest", "INTEGER DEFAULT 0")]:
             have = {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}
             if col not in have:
                 self.db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
@@ -522,7 +523,7 @@ class Store:
         return int(row["n"] or 0)
 
     def enqueue_outbox(self, *, surface_uuid, surface_ref, body, frm="",
-                       task_id: int | None = None, now=None) -> int:
+                       task_id: int | None = None, digest: bool = False, now=None) -> int:
         now = now if now is not None else time.time()
         if task_id is not None and self.has_pending_outbox(
             surface_uuid=surface_uuid, task_id=task_id
@@ -530,9 +531,9 @@ class Store:
             return 0
         cur = self.db.execute(
             "INSERT INTO outbox"
-            " (ts, surface_uuid, surface_ref, frm, body, task_id, delivered, status, updated_at)"
-            " VALUES (?,?,?,?,?,?,0,'pending',?)",
-            (now, surface_uuid, surface_ref, frm, body, task_id, now),
+            " (ts, surface_uuid, surface_ref, frm, body, task_id, digest, delivered, status,"
+            "  updated_at) VALUES (?,?,?,?,?,?,?,0,'pending',?)",
+            (now, surface_uuid, surface_ref, frm, body, task_id, 1 if digest else 0, now),
         )
         return cur.lastrowid
 
@@ -542,7 +543,7 @@ class Store:
         Strictly 'pending' — a 'held' message is counted for dedup but never flushed.
         """
         return [dict(r) for r in self.db.execute(
-            "SELECT id, body, task_id FROM outbox"
+            "SELECT id, body, task_id, COALESCE(digest,0) AS digest FROM outbox"
             " WHERE surface_uuid=? AND delivered=0 AND COALESCE(status,'pending')='pending'"
             " ORDER BY id LIMIT ?",
             (surface_uuid, limit),

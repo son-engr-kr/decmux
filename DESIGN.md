@@ -154,7 +154,8 @@ Tables:
 - **`task_comments`** (PK `id`): append-only timeline — `created`, `comment`,
   `progress`, `delegate`, `claim`, `done`/`answered`, `reopened`, `reminder`.
 - **`outbox`** (PK `id`): messages queued for a busy agent. `surface_uuid`,
-  `body`, `frm`, `task_id` (per-task dedup), `status`
+  `body`, `frm`, `task_id` (per-task dedup), `digest` (1 = a report-up pointer,
+  collapsed into one digest on flush), `status`
   (`pending`/`held`/`delivered`/`canceled`), `delivered`, timestamps. Pending =
   `delivered=0 AND status IN ('pending','held')`; only `pending` is flushed.
 - **`chat`** (PK `id`): the message hub timeline. `frm`, `dst`, `body`, `kind`
@@ -178,6 +179,17 @@ The full mined list (62 items) is the reference; the load-bearing ones:
   one queued message per idle turn (track a `flushed_idle` set; clear it when the
   surface leaves idle). Plus a `60s` busy-grace after last activity (bypassed by
   the flush path). This is the de-mixing guarantee.
+- **Report-up = pointer + digest, pull on demand.** A subordinate's news to the
+  manager (a `--to manager` send, or `task done/comment/answer`) is *not* dumped
+  into the manager's context. The full text stays in the durable store (task
+  thread / chat); decmux queues a one-line **pointer** (`digest=1` on the outbox
+  row) to the manager. On idle flush, command-class mail (triage, delegations,
+  pokes) goes first one-per-turn; with none pending, **all queued pointers collapse
+  into a single `[decmux · N team updates]` digest**. The manager pulls detail with
+  `decmux task show <id>` / `decmux report`. This keeps the manager's context lean
+  over a long horizon — the headline advantage over a raw in-session LLM subagent,
+  which dumps every child's full result back into the parent's window. Human
+  follow-ups, goals, and downward commands are exempt (delivered in full).
 - **Sender content first, then a `---  — decmux (system) —` separator,** then
   decmux's instructions, so the recipient can tell them apart.
 - **Manager human-gate.** Only the human and the bound manager may message

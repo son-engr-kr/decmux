@@ -33,6 +33,12 @@ timer) so the agents can stay the **reasoning plane**.
   deterministically **pokes the manager** to intervene (nudge / reassign /
   respawn), and **escalates to you** only if the manager stays silent. No agent
   rots idle while decmux is open.
+- **Lean report-up.** A worker's news to the manager (a `--to manager` send, or
+  `task done/comment/answer`) is kept in the durable store and shown to the manager
+  as a one-line pointer, batched into a single `[decmux · N team updates]` digest —
+  not dumped into its context. The manager pulls detail on demand with
+  `decmux task show <id>` / `decmux report`. Its context stays lean over long runs,
+  unlike a raw in-session subagent that returns its full result into the parent.
 
 ## Install
 

@@ -358,9 +358,64 @@ def _thread_brief(store, task: dict, limit: int = 5) -> str:
     return "\n".join(out)
 
 
+# --- report-up: a subordinate's news to the manager travels as a lean pointer ---
+# Auto-managed reporting. A subordinate agent reporting UP to the manager (a task
+# comment/done/answer, or a `--to manager` send) does NOT dump its full text into
+# the manager's context. decmux keeps the full text in the durable store (the task
+# thread / chat) and queues a one-line POINTER for the manager; pending pointers are
+# collapsed into a single DIGEST on the next idle flush. The manager pulls detail on
+# demand (`decmux task <id>` / `decmux report`). This is the value over a raw LLM
+# subagent: the manager's context stays lean and nothing interrupts mid-flow.
+_NON_REPORTERS = _HUMAN | {"manager", "decmux", ""}
+
+
+def _is_report_up(frm: str) -> bool:
+    """True for a subordinate agent reporting up (not the human, manager, or decmux)."""
+    return frm.strip().lower() not in _NON_REPORTERS
+
+
+def _report_pointer(frm: str, *, task_id: int | None = None,
+                    kind: str = "", text: str = "") -> str:
+    """One compact line summarizing a report-up, for the manager's digest."""
+    head = f"#{task_id} " if task_id else ""
+    verb = {"done": "done", "answered": "answered", "comment": "update",
+            "progress": "update", "reopened": "reopened"}.get(kind, kind or "msg")
+    snippet = " ".join((text or "").split())[:80]
+    line = f"{head}{verb} · {frm}"
+    return f"{line} — {snippet}" if snippet else line
+
+
+def enqueue_digest(store, pointer: str, *, frm: str = "") -> int:
+    """Queue a report-up pointer for the manager (no manager bound -> dropped, 0).
+    Always queued (never delivered inline) so it batches into the next idle digest."""
+    m = store.manager()
+    if not m:
+        return 0
+    return store.enqueue_outbox(surface_uuid=m[0], surface_ref=m[1],
+                                body=pointer, frm=frm, digest=True)
+
+
+def _render_digest(rows: list[dict]) -> str:
+    """Collapse pending report-up pointers into a single message for the manager."""
+    n = len(rows)
+    out = [f"[decmux · {n} team update{'s' if n != 1 else ''}]", ""]
+    out += [f"• {r['body']}" for r in rows]
+    out += ["",
+            "decmux is holding the full text — pull it when you act on these:",
+            "  decmux task show <id>   the task thread (original request + timeline)",
+            "  decmux report           recent transitions + messages"]
+    return "\n".join(out)
+
+
 def deliver_task_update(store, task: dict, *, kind: str, body: str, author: str) -> dict:
-    """Deliver a task comment/progress update to the manager and task owner, with a
-    thread re-brief so the manager has context even for an old task."""
+    """Push a task update to the manager. A subordinate's update travels up as a lean
+    pointer (collapsed into a digest on idle flush); a human follow-up or a manager's
+    own comment is delivered in full, with a thread re-brief for an old task."""
+    if _is_report_up(author):
+        rowid = enqueue_digest(
+            store, _report_pointer(author, task_id=int(task["id"]), kind=kind, text=body),
+            frm=author)
+        return {"delivered": 0, "queued": 1 if rowid else 0, "digest": True}
     targets = _task_update_targets(store, task)
     ws_ref = _ws_ref(store)
     message = (
@@ -517,6 +572,14 @@ def send(store, text: str, to: str = "manager", frm: str | None = None,
         return {"frm": frm, "dst": to, "requested_dst": requested_to,
                 "delivered": 0, "queued": 0, "task": tid, "closed_task": closed_task,
                 "gated_to_manager": gated_to_manager}
+    # Report-up: a subordinate's plain message to the manager travels as a lean
+    # digest pointer; the full text is already in the chat log (pull: decmux report).
+    if to.strip().lower() == "manager" and _is_report_up(frm) and not gated_to_manager and not tid:
+        rowid = enqueue_digest(store, _report_pointer(frm, text=text), frm=frm)
+        store.commit()
+        return {"frm": frm, "dst": to, "requested_dst": requested_to,
+                "delivered": 0, "queued": 1 if rowid else 0, "task": tid,
+                "closed_task": closed_task, "gated_to_manager": gated_to_manager}
     if tid:
         body = _task_card(store.get_task(tid), triage=True, frm=frm, goal=store.get_goal())
     else:
@@ -532,25 +595,38 @@ def send(store, text: str, to: str = "manager", frm: str | None = None,
 
 def flush_outbox(store, surface_uuid: str, surface_ref: str, ws_ref: str,
                  limit: int = 1) -> int:
-    """Deliver messages queued while a surface was busy, now that it is idle.
-    Marks only the ones actually delivered; stops on the first failure so the
-    rest are retried on the next idle tick."""
+    """Deliver one unit of queued mail to a now-idle surface, marking only what
+    actually went out. Verbatim messages (triage, commands, delegations) go first,
+    one per idle turn; with none pending, all queued report-up pointers collapse
+    into a single digest. Stops on the first failure so the rest retry next tick."""
     if _should_queue(store.agent_by_ref(surface_ref), recent_grace=False):
         return 0
-    sent_ids: list[int] = []
-    task_counts: dict[int, int] = {}
-    for row in store.pending_outbox(surface_uuid, limit=limit):
+    pending = store.pending_outbox(surface_uuid, limit=200)
+    verbatim = [r for r in pending if not r.get("digest")]
+    digests = [r for r in pending if r.get("digest")]
+    if verbatim:
+        sent_ids: list[int] = []
+        task_counts: dict[int, int] = {}
+        for row in verbatim[:limit]:
+            try:
+                _deliver(surface_ref, ws_ref, row["body"])
+            except (subprocess.CalledProcessError, OSError):
+                break
+            sent_ids.append(row["id"])
+            if row.get("task_id"):
+                task_counts[int(row["task_id"])] = task_counts.get(int(row["task_id"]), 0) + 1
+        store.mark_outbox_delivered(sent_ids)
+        for task_id, count in task_counts.items():
+            store.increment_task_delivered(task_id, count)
+        return len(sent_ids)
+    if digests:
         try:
-            _deliver(surface_ref, ws_ref, row["body"])
+            _deliver(surface_ref, ws_ref, _render_digest(digests))
         except (subprocess.CalledProcessError, OSError):
-            break
-        sent_ids.append(row["id"])
-        if row.get("task_id"):
-            task_counts[int(row["task_id"])] = task_counts.get(int(row["task_id"]), 0) + 1
-    store.mark_outbox_delivered(sent_ids)
-    for task_id, count in task_counts.items():
-        store.increment_task_delivered(task_id, count)
-    return len(sent_ids)
+            return 0
+        store.mark_outbox_delivered([r["id"] for r in digests])
+        return 1
+    return 0
 
 
 AGENT_CMD = {"claude": "claude --dangerously-skip-permissions", "codex": "codex --yolo"}

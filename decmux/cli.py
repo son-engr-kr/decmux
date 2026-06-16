@@ -215,6 +215,21 @@ def cmd_task(args: argparse.Namespace) -> int:
             task = store.get_task(tid)
         print(f"task #{tid} {task['status']}: {task['result']}")
         return 0
+    if args.action == "show":   # the pull target for a digest pointer: full thread
+        if args.json:
+            print(json.dumps({**task, "comments": store.task_comments(tid)},
+                             indent=2, ensure_ascii=False))
+            return 0
+        print(f"#{task['id']} [{task['status']}] {task['kind']} -> {task['to_whom']}"
+              + (f"  (assignee: {task['assignee']})" if task.get("assignee") else ""))
+        print(f"  request: {task['body']}")
+        if task.get("result"):
+            print(f"  result:  {task['result']}")
+        print("  timeline:")
+        for c in store.task_comments(tid):
+            print(f"    {time.strftime('%H:%M:%S', time.localtime(c['ts']))} "
+                  f"{c['author']} [{c['kind']}]: {c['body']}")
+        return 0
     assert args.text or args.action == "reopen", f"text required for task {args.action}"
     text = " ".join(args.text)
     if args.action in ("comment", "progress"):   # 'progress' is an alias for comment
@@ -231,12 +246,16 @@ def cmd_task(args: argparse.Namespace) -> int:
         res = bus.delegate_task(store, tid, args.text[0], " ".join(args.text[1:]), author=sender)
         body = (f"task #{tid} delegated to {res['assignee']} "
                 f"(delivered {res['delivered']}, queued {res['queued']})")
-    elif args.action == "done":
-        store.close_task(tid, text, "done", author=sender)
-        body = f"task #{tid} done: {text}"
-    elif args.action == "answer":
-        store.close_task(tid, text, "answered", author=sender)
-        body = f"task #{tid} answer: {text}"
+    elif args.action in ("done", "answer"):
+        status = "done" if args.action == "done" else "answered"
+        store.close_task(tid, text, status, author=sender)
+        # a subordinate closing a task reports up to the manager as a lean digest
+        # pointer; the full result stays in the task thread (pull: decmux task <id>).
+        res = (bus.deliver_task_update(store, store.get_task(tid), kind=status,
+                                       body=text, author=sender)
+               if bus._is_report_up(sender) else None)
+        extra = f" (queued {res['queued']})" if res and res.get("queued") else ""
+        body = f"task #{tid} {'done' if status == 'done' else 'answer'}: {text}{extra}"
     elif args.action == "reopen":
         store.reopen_task(tid, author=sender)
         res = bus.deliver_task_update(store, store.get_task(tid), kind="reopened",
@@ -293,6 +312,14 @@ def cmd_report(args: argparse.Namespace) -> int:
     for t in store.recent_transitions(args.limit):
         print(f"  {time.strftime('%H:%M:%S', time.localtime(t['ts']))} "
               f"{t['from_state']} -> {t['to_state']}  {t['title']}")
+    # operational traffic (reports up, delegations, pokes) — the detail behind a
+    # digest pointer when it was a plain send rather than a tracked task.
+    msgs = store.recent_chat(limit=args.limit, kind="report")
+    if msgs:
+        print("\nrecent messages:")
+        for c in msgs:
+            print(f"  {time.strftime('%H:%M:%S', time.localtime(c['ts']))} "
+                  f"{c['frm']} -> {c['dst']}: {c['body'][:100]}")
     return 0
 
 
@@ -509,7 +536,7 @@ def build_parser() -> argparse.ArgumentParser:
     psend.set_defaults(func=cmd_send)
 
     pt = sub.add_parser("task", help="task queue (tracked like issues)")
-    pt.add_argument("action", choices=["list", "add", "comment", "progress", "claim",
+    pt.add_argument("action", choices=["list", "show", "add", "comment", "progress", "claim",
                                        "delegate", "done", "answer", "reopen", "wait"])
     pt.add_argument("id", nargs="?")
     pt.add_argument("text", nargs="*")
