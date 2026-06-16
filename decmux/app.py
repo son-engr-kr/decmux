@@ -33,7 +33,7 @@ _CMD_META = {
     "/goal": "set the goal & run the autonomous loop toward it (alone: show it)",
     "/to": "set message target (manager | you | <agent> | all)",
     "/status": "agent states (from the supervisor)",
-    "/tasks": "open tasks  (/tasks closed for finished)",
+    "/tasks": "browse tasks: ↑/↓ + live detail  (/tasks closed · list for plain)",
     "/task": "focus a task thread + show its timeline  (/task <id>)",
     "/new": "start a new thread (fresh task)  (/new [text])",
     "/feed": "recent human-facing chat  (/feed N)",
@@ -61,7 +61,7 @@ HELP = """commands:  (Enter sends · Shift+Enter or Alt+Enter = newline)
   <text>            send to target; to the manager it continues the current thread
   /new [text]       start a new thread (fresh task)
   /task <id>        focus a task thread + show its timeline
-  /tasks [closed]   open tasks (or finished ones)
+  /tasks            browse tasks (↑/↓, live detail, Enter focuses)  ·  closed/list
   /spawn-manager    create the manager in a new surface
   /spawn [name] [t] add a worker (t = short|long|full term; default short)
   /despawn <name>   release an agent (graceful; add 'now' to close at once)
@@ -140,6 +140,7 @@ class AppState:
         self.target = "manager"
         self.thread: int | None = None     # current task thread (Q&A continues here)
         self.running = True
+        self.browsing = False              # true while the full-screen task browser owns the screen
 
 
 def _task_open(store, tid: int) -> bool:
@@ -229,6 +230,130 @@ def _task_detail(store, tid: int) -> None:
             print("          " + ln)
 
 
+def _is_tty() -> bool:
+    import sys
+    return sys.stdout.isatty()
+
+
+def _pt_author_style(author: str) -> str:
+    a = (author or "").lower()
+    if a == "manager":
+        return "class:manager"
+    if a == "decmux":
+        return "class:decmux"
+    if a in ("human", "you", "user", "me"):
+        return "class:human"
+    return "class:agent"
+
+
+def _task_browser(st: AppState) -> None:
+    """Full-screen task browser: ↑/↓ move, the detail pane tracks the selection live,
+    Enter focuses that thread, q/Esc closes. Falls back to a printed list with no tty."""
+    if not _is_tty():
+        _tasks(st.store)                   # tests / pipes: no full-screen UI
+        return
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import HSplit, Layout, Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.layout.dimension import Dimension
+    from prompt_toolkit.styles import Style
+
+    store = st.store
+    state = {"tasks": store.list_tasks(), "sel": 0}
+
+    def reload():
+        cur = state["tasks"][state["sel"]]["id"] if state["tasks"] else None
+        state["tasks"] = store.list_tasks()
+        ids = [t["id"] for t in state["tasks"]]
+        state["sel"] = ids.index(cur) if cur in ids else 0
+
+    def list_text():
+        if not state["tasks"]:
+            return [("class:dim", "  (no tasks yet)")]
+        out = []
+        for i, t in enumerate(state["tasks"]):
+            sel = i == state["sel"]
+            who = f" @{t['assignee']}" if t.get("assignee") else ""
+            line = f"{'▶' if sel else ' '} #{t['id']} [{t['status']}]{who} {t['body'][:44]}"
+            out.append(("class:sel" if sel else _pt_state_style(t["status"]), line + "\n"))
+        return out
+
+    def detail_text():
+        if not state["tasks"]:
+            return [("class:dim", "  no tasks")]
+        t = state["tasks"][state["sel"]]
+        out = [("class:hdr", f"#{t['id']} [{t['status']}]  {t.get('kind') or 'task'} → {t['to_whom']}")]
+        if t.get("assignee"):
+            out.append(("class:dim", f"   @{t['assignee']}"))
+        out.append(("", f"\n\n{t['body']}\n"))
+        if t.get("result"):
+            out.append(("class:ok", f"\nresult: {t['result']}\n"))
+        out.append(("class:dim", "\ntimeline:\n"))
+        for c in store.task_comments(t["id"])[-16:]:
+            ts = time.strftime("%H:%M", time.localtime(c["ts"]))
+            out.append(("class:dim", f"  {ts} "))
+            out.append((_pt_author_style(c["author"]), c["author"]))
+            out.append(("class:dim", f" [{c['kind']}]  "))
+            out.append(("", f"{c['body']}\n"))
+        return out
+
+    kb = KeyBindings()
+
+    @kb.add("up")
+    @kb.add("c-p")
+    def _(e):
+        if state["tasks"]:
+            state["sel"] = (state["sel"] - 1) % len(state["tasks"])
+
+    @kb.add("down")
+    @kb.add("c-n")
+    def _(e):
+        if state["tasks"]:
+            state["sel"] = (state["sel"] + 1) % len(state["tasks"])
+
+    @kb.add("r")
+    def _(e):
+        reload()
+
+    @kb.add("enter")
+    def _(e):
+        e.app.exit(result=(state["tasks"][state["sel"]]["id"] if state["tasks"] else None))
+
+    @kb.add("q")
+    @kb.add("escape")
+    @kb.add("c-c")
+    def _(e):
+        e.app.exit(result=None)
+
+    layout = Layout(HSplit([
+        Window(FormattedTextControl(list_text), height=Dimension(weight=1)),
+        Window(height=1, char="─", style="class:dim"),
+        Window(FormattedTextControl(detail_text), height=Dimension(weight=2), wrap_lines=True),
+        Window(height=1, content=FormattedTextControl(
+            lambda: [("class:dim", " ↑/↓ move · Enter focus thread · r reload · q close ")])),
+    ]))
+    style = Style.from_dict({
+        "sel": "reverse bold", "hdr": "bold", "dim": "#888888", "ok": "#2ecc71",
+        "open": "#3bb0c9", "in_progress": "#f1c40f", "triage": "#f1c40f",
+        "manager": "#3bb0c9", "agent": "#c77dff", "human": "#2ecc71", "decmux": "#f1c40f",
+    })
+    st.browsing = True
+    try:
+        tid = Application(layout=layout, key_bindings=kb, full_screen=True, style=style).run()
+    finally:
+        st.browsing = False
+    if tid is not None:
+        st.thread = tid                    # Enter focuses the thread for follow-up chat
+        _task_detail(store, tid)
+        print(_gray(f"focused thread #{tid} — type to continue it"))
+
+
+def _pt_state_style(status: str) -> str:
+    return {"done": "class:ok", "answered": "class:ok", "open": "class:open",
+            "in_progress": "class:in_progress", "triage": "class:triage"}.get(status, "")
+
+
 def _feed(store, n: int) -> None:
     for c in store.recent_chat(kind="chat", limit=n):
         _render_message(c["frm"], c["body"], c["dst"])
@@ -262,7 +387,12 @@ def _handle(st: AppState, line: str) -> bool:
         elif cmd == "status":
             _status(st.store)
         elif cmd == "tasks":
-            _tasks(st.store, closed=(rest == "closed"))
+            if rest == "closed":
+                _tasks(st.store, closed=True)
+            elif rest in ("list", "open"):
+                _tasks(st.store, closed=False)
+            else:
+                _task_browser(st)          # interactive ↑/↓ browser (falls back to a list)
         elif cmd == "task":
             if rest.isdigit():
                 st.thread = int(rest)            # focus this thread
@@ -354,6 +484,9 @@ def _feed_poller(st: AppState) -> None:
     last_chat = store.last_chat_id()
     last_tr = store.last_transition_id()
     while st.running:
+        if st.browsing:                    # the full-screen browser owns the screen
+            time.sleep(0.3)
+            continue
         try:
             for c in store.chat_after(last_chat, kind="chat"):
                 last_chat = c["id"]

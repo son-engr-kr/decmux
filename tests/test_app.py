@@ -140,6 +140,22 @@ def test_toolbar_renders(st):
     assert "decmux" in bar and "->manager" in bar
 
 
+def test_task_browser_falls_back_to_list_without_tty(st, capsys, monkeypatch):
+    monkeypatch.setattr(app, "_is_tty", lambda: False)   # force the non-interactive path
+    st.store.add_task(kind="command", body="browse me", to_whom="manager")
+    app._task_browser(st)
+    assert "browse me" in capsys.readouterr().out        # printed the list, no full-screen app
+
+
+def test_tasks_command_routes_closed_and_browser(st, capsys, monkeypatch):
+    monkeypatch.setattr(app, "_is_tty", lambda: False)
+    done = st.store.add_task(kind="command", body="closed task body", to_whom="manager")
+    st.store.close_task(done, "finished", "done")
+    assert app._handle(st, "/tasks closed") is True
+    assert "closed task body" in capsys.readouterr().out
+    assert app._handle(st, "/tasks") is True             # browser -> tty fallback list, no crash
+
+
 def test_wakeup_label_shows_kind_and_minutes(st):
     import time
     st.store.set_meta("next_wakeup_ts", f"{time.time() + 185:.0f}")
