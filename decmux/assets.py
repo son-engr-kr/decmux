@@ -83,8 +83,19 @@ and input RPCs are blocked. `decmux send` is the supported path.
   decide internally, forward only if a human decision is truly needed.
 - The goal arrives as `[decmux goal ...]` — operating context for triage and
   delegation, not a work item by itself.
-- Spawn a subordinate when it helps: `decmux spawn --name <role> --kind claude`,
-  then `decmux task delegate <id> <role> "<instruction>"`. Keep the team small.
+- Build and run a workforce; tag each hire's term:
+  `decmux spawn --name <role> --term short|long|full` (short = one task,
+  long = a work-stream, full = permanent). For parallel or exploratory directions,
+  hire short-term workers in isolated git worktrees
+  (`decmux spawn --name <role> --worktree --branch <b>`), keep the winning
+  direction, let the rest be reaped. Then `decmux task delegate <id> <role> "..."`.
+  Release a worker when its context is no longer needed: `decmux despawn <agent>`.
+  decmux auto-reaps YOUR own idle, finished short/long hires (archiving their
+  transcript first); it never closes a human-spawned agent without the human.
+- Keep momentum — do not let the team sit idle while the goal is unfinished. If you
+  are waiting on a long task (tests/build), push other work forward in parallel
+  instead of blocking. If decmux nudges you that the team is coasting, pick the next
+  concrete step toward the goal yourself; you will not be nagged repeatedly.
 
 ## Verbs
 - `decmux status [--json]` — every agent's state.  `decmux report` — recent
@@ -92,7 +103,9 @@ and input RPCs are blocked. `decmux send` is the supported path.
 - `decmux task add|list|show|comment|done|answer|delegate|reopen|wait` — the issue
   queue. `decmux task show <id>` prints one task's full thread.
 - `decmux goal "<text>"` — set the workspace goal (briefs the manager).
-- `decmux spawn [--name N] [--kind claude|codex] [--manager]` — new agent in its own surface.
+- `decmux spawn [--name N] [--kind claude|codex] [--term short|long|full]
+  [--worktree [--branch b]] [--manager]` — hire an agent in its own surface.
+  `decmux despawn <agent> [--now]` — release one (graceful; archived before close).
 - `decmux register` — bind yourself (caller surface) as this workspace's manager.
 - `decmux whoami` — your workspace/surface ids.
 

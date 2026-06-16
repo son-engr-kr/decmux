@@ -35,6 +35,14 @@ class WorkspaceConfig:
     manager: str | None = None        # manager surface selector
     # auto-answer of safe/reversible Feed permission requests while decmux is open
     auto_answer: bool = False         # off by default; the human/manager answers
+    # workforce lifecycle: self-spawned agents are auto-reaped when idle + done;
+    # human-spawned ones are never auto-closed (the human confirms via /despawn).
+    reap_short_grace: float = 120.0   # idle seconds before a short-term self agent is reaped
+    reap_long_grace: float = 600.0    # idle seconds before a long-term self agent is reaped
+    # proactive momentum: when the team coasts (idle, goal unfinished), nudge the
+    # manager ONCE to advance — never a repeated nag.
+    momentum: bool = True             # master switch for the coast nudge
+    momentum_cooldown: float = 300.0  # min seconds between coast nudges (anti-nag floor)
 
 
 @dataclass

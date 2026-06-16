@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import mimetypes
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -62,7 +63,10 @@ CREATE TABLE IF NOT EXISTS chat (
     ts REAL, frm TEXT, dst TEXT, body TEXT, kind TEXT
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT, updated_at REAL);
-CREATE TABLE IF NOT EXISTS managed (surface_uuid TEXT PRIMARY KEY, role TEXT, kind TEXT, ts REAL);
+CREATE TABLE IF NOT EXISTS managed (
+    surface_uuid TEXT PRIMARY KEY, role TEXT, kind TEXT,
+    term TEXT DEFAULT 'short', origin TEXT DEFAULT 'self',
+    status TEXT DEFAULT 'active', ts REAL);
 CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, kind TEXT, body TEXT, to_whom TEXT,
     status TEXT, progress TEXT, result TEXT, updated_at REAL,
@@ -112,6 +116,9 @@ class Store:
     def _migrate(self) -> None:
         """Additive column migrations for stores created before a column existed."""
         for table, col, decl in [("managed", "kind", "TEXT"),
+                                 ("managed", "term", "TEXT DEFAULT 'short'"),
+                                 ("managed", "origin", "TEXT DEFAULT 'self'"),
+                                 ("managed", "status", "TEXT DEFAULT 'active'"),
                                  ("outbox", "digest", "INTEGER DEFAULT 0")]:
             have = {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}
             if col not in have:
@@ -137,16 +144,33 @@ class Store:
 
     # --- managed surfaces (decmux only supervises surfaces it onboarded) ---
     def mark_managed(self, surface_uuid: str, role: str = "agent",
-                     kind: str = "claude", now=None) -> None:
+                     kind: str = "claude", term: str = "short",
+                     origin: str = "self", now=None) -> None:
         self.db.execute(
-            "INSERT OR REPLACE INTO managed (surface_uuid, role, kind, ts) VALUES (?,?,?,?)",
-            (surface_uuid, role, kind, now if now is not None else time.time()))
+            "INSERT OR REPLACE INTO managed"
+            " (surface_uuid, role, kind, term, origin, status, ts) VALUES (?,?,?,?,?,'active',?)",
+            (surface_uuid, role, kind, term, origin, now if now is not None else time.time()))
 
     def unmark_managed(self, surface_uuid: str) -> None:
         self.db.execute("DELETE FROM managed WHERE surface_uuid=?", (surface_uuid,))
 
     def managed_set(self) -> set[str]:
         return {r["surface_uuid"] for r in self.db.execute("SELECT surface_uuid FROM managed")}
+
+    def managed_rows(self) -> list[dict]:
+        return [dict(r) for r in self.db.execute(
+            "SELECT surface_uuid, role, kind, term, origin, status, ts FROM managed")]
+
+    def managed_row(self, surface_uuid: str) -> dict | None:
+        r = self.db.execute(
+            "SELECT surface_uuid, role, kind, term, origin, status, ts FROM managed"
+            " WHERE surface_uuid=?", (surface_uuid,)).fetchone()
+        return dict(r) if r else None
+
+    def set_managed_status(self, surface_uuid: str, status: str) -> None:
+        assert status in ("active", "releasing"), f"invalid managed status: {status}"
+        self.db.execute("UPDATE managed SET status=? WHERE surface_uuid=?",
+                        (status, surface_uuid))
 
     def managed_kinds(self) -> dict[str, str]:
         return {r["surface_uuid"]: (r["kind"] or "")
@@ -487,6 +511,16 @@ class Store:
         (self.files_dir / fid).write_bytes(data)
         mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
         return {"id": fid, "name": name, "mime": mime, "size": len(data)}
+
+    def archive_transcript(self, name: str, text: str) -> str:
+        """Save a released agent's screen transcript under files/archive/ before its
+        surface is closed, so its context isn't lost when it is reaped."""
+        d = self.files_dir / "archive"
+        d.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^\w.-]", "_", name or "")[:40] or "agent"
+        path = d / f"{safe}-{int(time.time())}.txt"
+        path.write_text(text or "")
+        return str(path)
 
     def file_abspath(self, fid: str) -> str | None:
         """Resolve a stored-file id to its absolute path, refusing traversal."""

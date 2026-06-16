@@ -50,8 +50,10 @@ normal case, not a rare recovery.
 - **No unattended / overnight supervision.** While `decmux` is closed, agents run
   unsupervised: no queued delivery, no classification, no pokes. The old night
   mode, morning report, auto-respawn-with-backoff, usage-limit auto-resume,
-  budget-cap pause, autoscale, and idle-reap are **dropped**. (Re-evaluate only
-  if a "run while I sleep" need returns — it would require a background process.)
+  budget-cap pause, and autoscale stay **dropped**. (Re-evaluate only if a "run
+  while I sleep" need returns — it would require a background process.) *Idle-reap
+  is back, but only as a foreground, provenance-gated **workforce lifecycle** — see
+  below — not the old unattended autoscaler.*
 - **No web UI** (the old `office`) and **no Discord** frontend.
 - **No global daemon / cross-workspace single pane.** A `decmux ls` that scans
   the state dir for known workspaces is the only cross-workspace affordance.
@@ -93,6 +95,44 @@ unreliable supervisor" problem, so code — not the manager — owns the timer:
 
 Net: while `decmux` is open, no stuck agent rots unseen — code guarantees the
 manager is told, and the human is told if the manager does not act.
+
+### Workforce lifecycle (hire / archive / fire)
+
+Claude's native subagents are short-term contractors that vanish in-process when
+their one task returns. decmux runs a *durable* workforce of surface agents with an
+employment **term** and an **origin**, recorded in the `managed` registry:
+
+- **term** `short` (one task) · `long` (a work-stream) · `full` (permanent; the
+  manager). Set at hire: `decmux spawn --name <r> --term <t> [--worktree [--branch b]]`.
+  `--worktree` runs the agent in a fresh `git worktree` beside the repo, so parallel
+  / exploratory directions never clash; the path is remembered for cleanup.
+- **origin** `self` (the manager/decmux spawned it) · `human` (you spawned it via
+  the REPL `/spawn` or `decmux spawn` run by a human).
+
+The reaper (one `_reap_step` per agent per tick) fires an agent only when it is
+**idle, has no open assigned task, and no queued mail**, held for a term-scoped
+grace (`reap_short_grace`/`reap_long_grace`). Then, by origin:
+
+- **self** → auto-reap: archive the screen transcript to `files/archive/` (the
+  graceful hand-off is also in the task thread), `close-surface`, `git worktree
+  remove`, unmanage. No asking — you don't micro-manage your own hires.
+- **human** → never auto-closed; decmux notifies you once and you release it with
+  `decmux despawn <agent>` (graceful: it's told to wrap up and hand off, then the
+  reaper closes it; `--now` closes immediately). A surface close is irreversible, so
+  human work is never destroyed without the human.
+
+The manager (`term=full`) and any pending-work or working agent are never touched.
+
+### Momentum (one nudge when the team coasts)
+
+Spare budget shouldn't sit idle. When a goal is set but **every** managed agent is
+idle and there is **no** open work, the team is *coasting*. `_momentum_step` then
+pokes the manager **once** — "advance the goal: pick the next step, spin up
+short-term workers, use worktrees for parallel directions, don't wait" — and arms a
+latch. It re-fires only after the team has been busy again (latch cleared) and a
+`momentum_cooldown` floor has passed, so it nudges without ever nagging. An agent
+genuinely working (e.g. blocking on a test run) keeps the team out of the coasting
+state, so productive waiting is never interrupted.
 
 ## Stack
 
@@ -146,6 +186,10 @@ Tables:
   each tick.
 - **`binding`** (singleton): the one manager surface for this workspace
   (`surface_uuid`, `surface_ref`, `cwd`, `updated_at`).
+- **`managed`** (PK `surface_uuid`): the workforce registry — only onboarded
+  surfaces are supervised. `role` (`manager`/`agent`), `kind` (`claude`/`codex`),
+  `term` (`short`/`long`/`full`), `origin` (`self`/`human`), `status`
+  (`active`/`releasing`), `ts`. Drives B-scope, the reaper, and despawn.
 - **`tasks`** (PK `id`): `kind` (`question`/`command`), `body`, `to_whom`,
   `assignee`, `status` (`triage`/`open`/`in_progress`/`done`/`answered`),
   `progress`, `result`, `source`, `author`, `source_id` (dedup key),

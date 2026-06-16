@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from decmux import assets, bus
+from decmux import assets, bus, cmux
 from decmux.store import Store
 
 
@@ -316,3 +316,37 @@ def test_urgent_task_comment_delivered_full(s, recorder):
     assert res.get("digest") is None and res["delivered"] == 1
     assert "which index" in recorder[-1][1]           # full text reached the manager
     assert not any(r["digest"] for r in s.pending_outbox("m1"))
+
+
+# --- workforce lifecycle: hire (term/origin), archive, fire (despawn) ---
+
+def test_spawn_tags_term_and_origin(s, fake_cmux):
+    bus.spawn_agent(s, manager=True)                  # manager -> term forced to full, self
+    assert s.managed_row("UUID-5")["term"] == "full"
+    assert s.managed_row("UUID-5")["origin"] == "self"
+    bus.spawn_agent(s, name="explorer", term="long", origin="human")   # joins as a tab
+    row = s.managed_row("DEADBEEF-0006")
+    assert row["term"] == "long" and row["origin"] == "human"
+
+
+def test_despawn_now_archives_and_closes(s, monkeypatch):
+    monkeypatch.setattr(bus, "_ws_ref", lambda store: "")
+    monkeypatch.setattr(cmux, "read_screen", lambda *a, **k: "SCREEN DUMP")
+    closed: list = []
+    monkeypatch.setattr(cmux, "run", lambda *a: closed.append(a))
+    add_agent(s, uuid="w1", ref="surface:3", name="w1", state="idle")
+    s.mark_managed("w1", term="short", origin="self")
+    res = bus.despawn(s, "w1", now=True)
+    assert res["closed"] and not s.is_managed("w1")
+    assert any(a[0] == "close-surface" for a in closed)
+    with open(res["archive"]) as fh:
+        assert "SCREEN DUMP" in fh.read()              # transcript saved before close
+
+
+def test_despawn_graceful_marks_releasing(s, recorder):
+    add_agent(s, uuid="w1", ref="surface:3", name="w1", state="idle")
+    s.mark_managed("w1", term="long", origin="self")
+    res = bus.despawn(s, "w1")
+    assert res["releasing"] and not res["closed"]
+    assert s.managed_row("w1")["status"] == "releasing"
+    assert recorder and "contract ending" in recorder[-1][1]   # wrap-up delivered

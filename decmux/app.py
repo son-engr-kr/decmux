@@ -20,14 +20,15 @@ from . import bus
 from . import session as session_mod
 from .store import Store
 
-_COMMANDS = ["/spawn-manager", "/spawn", "/goal", "/to", "/status", "/tasks",
+_COMMANDS = ["/spawn-manager", "/spawn", "/despawn", "/goal", "/to", "/status", "/tasks",
              "/task", "/new", "/feed", "/report", "/help", "/quit"]
 _TARGETS = ["manager", "human", "all"]
 
 # shown beside each completion (prompt_toolkit display_meta) when it is focused
 _CMD_META = {
     "/spawn-manager": "create the manager in a new surface",
-    "/spawn": "add a worker agent in a new surface  (/spawn <name>)",
+    "/spawn": "add a worker  (/spawn <name> [short|long|full])",
+    "/despawn": "release an agent  (/despawn <name> [now])",
     "/goal": "set the workspace goal (briefs the manager)",
     "/to": "set message target (manager | you | <agent> | all)",
     "/status": "agent states (from the supervisor)",
@@ -61,7 +62,8 @@ HELP = """commands:  (Enter sends · Shift+Enter or Alt+Enter = newline)
   /task <id>        focus a task thread + show its timeline
   /tasks [closed]   open tasks (or finished ones)
   /spawn-manager    create the manager in a new surface
-  /spawn [name]     add a worker agent (joins the manager's pane as a tab)
+  /spawn [name] [t] add a worker (t = short|long|full term; default short)
+  /despawn <name>   release an agent (graceful; add 'now' to close at once)
   /goal <text>      set the workspace goal (briefs the manager)
   /to <name>        set target (manager | human | <agent> | all)
   /status           agent states (from the supervisor)
@@ -220,15 +222,32 @@ def _handle(st: AppState, line: str) -> bool:
                 res = bus.send(st.store, "/goal " + rest, to="manager", frm="human")
                 print(f"goal set (delivered {res.get('delivered', 0)}, queued {res.get('queued', 0)})")
         elif cmd in ("spawn", "spawn-manager"):
-            res = bus.spawn_agent(st.store, name=(rest or None), manager=(cmd == "spawn-manager"))
+            parts = rest.split()
+            term = parts.pop() if parts and parts[-1] in ("short", "long", "full") else "short"
+            nm = " ".join(parts) or None
+            # REPL spawns are human-origin: never auto-reaped (you confirm via /despawn)
+            res = bus.spawn_agent(st.store, name=nm, manager=(cmd == "spawn-manager"),
+                                  term=term, origin="human")
             if res.get("created"):
                 label = "manager" if res["manager"] else res["name"]
-                print(f"spawned {label}: {res['surface_ref']} "
+                tag = "" if res["manager"] else f" [{res.get('term', 'short')}]"
+                print(f"spawned {label}: {res['surface_ref']}{tag} "
                       f"(switch to it in cmux to watch)")
                 if res["manager"]:
                     st.target = "manager"
             else:
                 print(res.get("reason", "not created"))
+        elif cmd == "despawn":
+            if not rest:
+                print("usage: /despawn <agent> [now]")
+            else:
+                parts = rest.split()
+                now = bool(parts) and parts[-1] == "now"
+                if now:
+                    parts.pop()
+                res = bus.despawn(st.store, " ".join(parts), now=now)
+                print(f"despawned {res['name']} — surface closed" if res["closed"]
+                      else f"releasing {res['name']} — closed when idle & handed off")
         else:
             print(f"unknown command: /{cmd}  (try /help)")
         return True

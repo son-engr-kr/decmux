@@ -346,13 +346,32 @@ def cmd_ls(args: argparse.Namespace) -> int:
 
 def cmd_spawn(args: argparse.Namespace) -> int:
     """Create a new cmux surface and launch a decmux-managed agent in it."""
-    res = bus.spawn_agent(_store(args), name=args.name, kind=args.kind,
-                          manager=args.manager, command=args.command)
+    store = _store(args)
+    # provenance drives the reaper: a human-run spawn is never auto-closed.
+    origin = "human" if bus.resolve_sender(store) in bus._HUMAN else "self"
+    res = bus.spawn_agent(store, name=args.name, kind=args.kind, manager=args.manager,
+                          command=args.command, term=args.term, origin=origin,
+                          worktree=args.worktree, branch=args.branch)
     if res.get("created"):
+        tags = [] if res["manager"] else [res.get("term", "short")]
+        if res.get("worktree"):
+            tags.append(f"worktree {res['worktree']}")
+        tag = f"  [{', '.join(tags)}]" if tags else ""
         print(f"spawned {res['name']}: {res['surface_ref']}"
-              + (" (manager)" if res["manager"] else ""))
+              + (" (manager)" if res["manager"] else "") + tag)
     else:
         print(res.get("reason", "not created"))
+    return 0
+
+
+def cmd_despawn(args: argparse.Namespace) -> int:
+    """Release an agent: graceful by default (wrap up, hand off, then closed when
+    idle); --now archives and closes immediately."""
+    res = bus.despawn(_store(args), args.agent, now=args.now)
+    if res["closed"]:
+        print(f"despawned {res['name']} — surface closed; transcript: {res['archive']}")
+    else:
+        print(f"releasing {res['name']} — it will be archived and closed once idle and handed off")
     return 0
 
 
@@ -587,8 +606,19 @@ def build_parser() -> argparse.ArgumentParser:
     psp.add_argument("--kind", choices=["claude", "codex"], default="claude")
     psp.add_argument("--manager", action="store_true")
     psp.add_argument("--command")
+    psp.add_argument("--term", choices=["short", "long", "full"], default="short",
+                     help="employment term: short=per-task, long=per-workstream, full=permanent")
+    psp.add_argument("--worktree", action="store_true",
+                     help="run the agent in a fresh git worktree (parallel/exploratory work)")
+    psp.add_argument("--branch", help="branch name for the worktree")
     psp.add_argument("--workspace")
     psp.set_defaults(func=cmd_spawn)
+
+    pds = sub.add_parser("despawn", help="release an agent (graceful; --now closes immediately)")
+    pds.add_argument("agent")
+    pds.add_argument("--now", action="store_true", help="archive and close right away")
+    pds.add_argument("--workspace")
+    pds.set_defaults(func=cmd_despawn)
 
     psu = sub.add_parser("setup", help="install (or --remove) the global Claude SessionStart hook")
     psu.add_argument("--remove", action="store_true", help="uninstall the global hook (inverse of setup)")

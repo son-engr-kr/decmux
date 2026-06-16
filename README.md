@@ -39,6 +39,19 @@ timer) so the agents can stay the **reasoning plane**.
   not dumped into its context. The manager pulls detail on demand with
   `decmux task show <id>` / `decmux report`. Its context stays lean over long runs,
   unlike a raw in-session subagent that returns its full result into the parent.
+  A worker's question / decision / block is exempt — delivered in full and promptly.
+- **Workforce lifecycle.** Agents are hired with a term: `decmux spawn --term
+  short|long|full` (short = one task, long = a work-stream, full = permanent), and
+  optionally in an isolated git worktree (`--worktree`) for parallel exploration.
+  decmux **auto-reaps** a *self-spawned* agent once it is idle with its work closed —
+  archiving its transcript to `files/archive/` first — and `git worktree remove`s
+  its tree. A **human-spawned** agent is never auto-closed; decmux asks you, and you
+  release it with `decmux despawn <agent>` (graceful: it wraps up and hands off,
+  then closes). Hire → work → reap → re-hire, automatically.
+- **Momentum.** When the team coasts (idle, goal unfinished, no open work) decmux
+  nudges the manager **once** to advance — pick the next step, spin up short-term
+  workers, use worktrees for parallel directions — then backs off (re-armed only
+  when the team is busy again, with a cooldown floor). Tight, never a repeated nag.
 
 ## Install
 

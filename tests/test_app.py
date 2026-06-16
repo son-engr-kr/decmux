@@ -71,8 +71,9 @@ def test_slash_spawn_routes_to_spawn_agent(st, monkeypatch):
          "manager": k.get("manager", False)})
     app._handle(st, "/spawn worker1")
     app._handle(st, "/spawn-manager")
-    assert calls[0] == {"name": "worker1", "manager": False}
-    assert calls[1] == {"name": None, "manager": True}
+    # REPL spawns are human-origin (never auto-reaped); default term is short
+    assert calls[0] == {"name": "worker1", "manager": False, "term": "short", "origin": "human"}
+    assert calls[1] == {"name": None, "manager": True, "term": "short", "origin": "human"}
 
 
 def test_blank_line_is_noop(st):

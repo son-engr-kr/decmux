@@ -8,6 +8,7 @@ and de-mixed. One store = one workspace, so nothing here is workspace-scoped.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import time
@@ -669,12 +670,16 @@ def _surface_pane(surface_ref: str) -> str | None:
 
 def spawn_agent(store, *, name: str | None = None, kind: str = "claude",
                 manager: bool = False, command: str | None = None,
-                direction: str = "right") -> dict:
+                direction: str = "right", term: str = "short", origin: str = "self",
+                worktree: bool = False, branch: str | None = None) -> dict:
     """Launch a decmux-managed agent. The manager gets its own split pane; workers
     join the manager's pane as TABS (so the window isn't endlessly subdivided).
 
-    Records the surface in the managed registry, sets DECMUX_ROLE + the cmux guard,
-    binds the manager if requested, and onboards a codex agent via the protocol."""
+    Records the surface in the managed registry with its employment `term`
+    (short/long/full) and `origin` (human/self) — which drive the reaper — sets
+    DECMUX_ROLE + the cmux guard, optionally runs the agent in a fresh git worktree
+    (for parallel/exploratory work), binds the manager if requested, and onboards a
+    codex agent via the protocol."""
     wl = cmux.run_json("workspace", "list", "--id-format", "both", "--json")["workspaces"]
     w = next((x for x in wl if x.get("id") == store.workspace_uuid), None)
     assert w, "workspace not found"
@@ -682,6 +687,13 @@ def spawn_agent(store, *, name: str | None = None, kind: str = "claude",
     mgr = store.manager()
     if manager and mgr:
         return {"created": False, "reason": "manager already bound", "surface_ref": mgr[1]}
+    if manager:
+        term = "full"                       # the manager is permanent (never auto-reaped)
+    worktree_path = None
+    if worktree:
+        assert cwd, "cannot create a worktree: workspace has no current_directory"
+        worktree_path = _make_worktree(cwd, name or kind, branch)
+        cwd = worktree_path
 
     if manager or not mgr:
         # the manager (or a first agent with no manager) gets its own split pane
@@ -707,7 +719,10 @@ def spawn_agent(store, *, name: str | None = None, kind: str = "claude",
     # default name carries the surface number so unnamed agents don't collide
     nm = name or f"{'manager' if manager else 'agent'}-{sref.rsplit(':', 1)[-1]}"
     cmux.run("rename-tab", "--workspace", ws_ref, "--surface", sref, nm)
-    store.mark_managed(suuid, role=("manager" if manager else "agent"), kind=kind)
+    store.mark_managed(suuid, role=("manager" if manager else "agent"), kind=kind,
+                       term=term, origin=origin)
+    if worktree_path:
+        store.set_meta(f"worktree:{suuid}", worktree_path)
     cmd = assets.guarded_command(
         command or AGENT_CMD.get(kind or "claude", AGENT_CMD["claude"]),
         env={"CMUX_WORKSPACE_ID": store.workspace_uuid, "CMUX_WORKSPACE_REF": ws_ref,
@@ -721,7 +736,78 @@ def spawn_agent(store, *, name: str | None = None, kind: str = "claude",
     if manager:
         store.bind_manager(surface_uuid=suuid, surface_ref=sref, cwd=cwd)
     store.commit()
-    return {"created": True, "name": nm, "surface_ref": sref, "manager": manager}
+    return {"created": True, "name": nm, "surface_ref": sref, "manager": manager,
+            "term": term, "origin": origin, "worktree": worktree_path}
+
+
+# --- workforce lifecycle: hire (spawn, above), archive, fire (reap / despawn) ---
+
+def _make_worktree(repo_cwd: str, name: str, branch: str | None = None) -> str:
+    """Create a git worktree beside the repo and return its path (fail-fast)."""
+    repo = os.path.abspath(repo_cwd.rstrip("/"))
+    label = re.sub(r"[^\w.-]", "-", name or "agent")[:32] or "agent"
+    path = os.path.join(f"{repo}.worktrees", f"{label}-{int(time.time())}")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    args = ["git", "-C", repo_cwd, "worktree", "add"]
+    if branch:
+        args += ["-b", branch]
+    args.append(path)
+    subprocess.run(args, check=True, capture_output=True, text=True)
+    return path
+
+
+def archive_agent(store, surface_ref: str, name: str, ws_ref: str = "") -> str:
+    """Dump the agent's screen transcript to files/archive/ before it is closed.
+    Best-effort capture (scrollback depth is limited); the graceful path also leaves
+    the agent's hand-off in its task thread, which is fully durable."""
+    try:
+        screen = cmux.read_screen(surface_ref, workspace=ws_ref or None, lines=400)
+    except (subprocess.CalledProcessError, OSError):
+        screen = ""
+    return store.archive_transcript(name, screen)
+
+
+def close_surface(store, surface_uuid: str, surface_ref: str, name: str,
+                  ws_ref: str = "", *, reason: str = "reaped") -> str:
+    """Archive, close the cmux surface, remove its worktree, and unmanage it. Callers
+    must have already checked the agent is idle with its work closed."""
+    path = archive_agent(store, surface_ref, name, ws_ref)
+    base = (["--workspace", ws_ref] if ws_ref else []) + ["--surface", surface_ref]
+    try:
+        cmux.run("close-surface", *base)
+    except (subprocess.CalledProcessError, OSError):
+        pass
+    wt = store.get_meta(f"worktree:{surface_uuid}", "")
+    if wt:
+        subprocess.run(["git", "-C", wt, "worktree", "remove", "--force", wt],
+                       check=False, capture_output=True, text=True)
+        store.set_meta(f"worktree:{surface_uuid}", "")
+    store.unmark_managed(surface_uuid)
+    if store.manager() and store.manager()[0] == surface_uuid:
+        store.clear_manager()
+    store.record_transition(surface_uuid=surface_uuid, title=f"{name} ({reason})",
+                            from_state=None, to_state="dead")
+    return path
+
+
+def despawn(store, agent: str, *, now: bool = False, ws_ref: str | None = None) -> dict:
+    """Release an agent. Graceful by default: tell it to wrap up and hand off, then
+    the reaper closes it once it is idle + done. `now=True` archives and closes at
+    once. (The human confirms releasing a human-spawned agent by calling this.)"""
+    targets = _targets(store, agent)
+    assert targets, f"agent {agent} not found"
+    sref, suuid, name = targets[0]
+    ws_ref = ws_ref if ws_ref is not None else _ws_ref(store)
+    if now:
+        path = close_surface(store, suuid, sref, name, ws_ref, reason="despawned")
+        store.commit()
+        return {"closed": True, "releasing": False, "name": name, "archive": path}
+    store.set_managed_status(suuid, "releasing")
+    send(store, "contract ending — finish up and hand off via "
+                '`decmux task done/comment`; you will be released when idle.',
+         to=agent, frm="decmux", track_task=False, force=True)
+    store.commit()
+    return {"closed": False, "releasing": True, "name": name}
 
 
 def deliver_protocol(store, surface_uuid: str, surface_ref: str) -> int:

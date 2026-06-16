@@ -73,6 +73,11 @@ class Session:
         self._stuck_since: dict[str, float] = {}
         self._poked: set[str] = set()
         self._escalated: set[str] = set()
+        # workforce reaper + proactive momentum bookkeeping (in-memory)
+        self._idle_since: dict[str, float] = {}
+        self._reap_notified: set[str] = set()
+        self._momentum_armed = False
+        self._momentum_ts = 0.0
 
         self._events_proc = None
         self._q: queue.Queue = queue.Queue()
@@ -129,6 +134,66 @@ class Session:
             self._notify_human(f"decmux: still {state} (manager silent)",
                                f"{name} {state} {mins}m")
             self._escalated.add(key)
+
+    # --- workforce reaper: fire idle, done agents (self auto, human asks first) ---
+    def _reap_step(self, row: watch.Row, now: float) -> None:
+        key = row.surface.key
+        m = self.store.managed_row(key)
+        if not m or m["role"] == "manager" or m["term"] == "full":
+            return                              # the manager / full-timers are permanent
+        name = bus._clean_name(row.surface.title)
+        if row.state != "idle":                 # working/stuck/etc. -> not reapable
+            self._idle_since.pop(key, None)
+            self._reap_notified.discard(key)
+            return
+        if self.store.open_tasks_for_actor(actor=name) or self.store.pending_outbox(key, limit=1):
+            self._idle_since.pop(key, None)     # still has work or queued mail -> keep
+            return
+        self._idle_since.setdefault(key, now)
+        releasing = m["status"] == "releasing"
+        grace = (self.cfg.reap_short_grace if (releasing or m["term"] == "short")
+                 else self.cfg.reap_long_grace)
+        if now - self._idle_since[key] < grace:
+            return
+        if releasing or m["origin"] == "self":
+            # self-spawned, or explicitly released by the human: auto-reap (archive first)
+            bus.close_surface(self.store, key, row.surface.ref, name, self.ws_ref,
+                              reason=("despawned" if releasing else "reaped: idle, done"))
+            self._notify_human(f"decmux: released {name}",
+                               f"{name} ({m['term']}) reaped; transcript archived")
+            self._idle_since.pop(key, None)
+            self.known.pop(key, None)
+        elif key not in self._reap_notified:
+            # human-spawned: never auto-closed — ask the human once
+            self._notify_human(f"decmux: {name} idle & done",
+                               f"{name} finished — /despawn {name} to release it")
+            self._reap_notified.add(key)
+
+    # --- proactive momentum: one nudge when the team coasts (never a repeated nag) ---
+    def _momentum_step(self, now: float, rows: list[watch.Row]) -> None:
+        if not self.cfg.momentum:
+            return
+        # coasting = a goal is set, every managed agent is idle, and there is no open
+        # work to fall back on. (Open-but-undelegated tasks are the pulse's job.)
+        coasting = (bool(self.store.get_goal()) and bool(rows)
+                    and all(r.state == "idle" for r in rows)
+                    and not self.store.open_tasks())
+        if not coasting:
+            self._momentum_armed = False        # re-arm once the team is busy again
+            return
+        if self._momentum_armed or (now - self._momentum_ts) < self.cfg.momentum_cooldown:
+            return
+        if not self.store.manager():
+            return                              # no manager to nudge; an idle goal is the human's
+        bus.send(
+            self.store,
+            "team idle and the goal is not done. Advance it: decide the next concrete "
+            "step toward the goal, spin up short-term workers (use `decmux spawn "
+            "--worktree` for parallel/exploratory directions), and keep momentum — do "
+            "not sit waiting on one task. If the goal truly is complete, report to the human.",
+            to="manager", frm="decmux", track_task=False)
+        self._momentum_armed = True
+        self._momentum_ts = now
 
     # --- manager pulse: keep open tasks from rotting ---
     def _manager_pulse(self, now: float) -> None:
@@ -272,6 +337,7 @@ class Session:
             elif key not in self.flushed_idle:
                 if bus.flush_outbox(self.store, key, r.surface.ref, self.ws_ref):
                     self.flushed_idle.add(key)
+            self._reap_step(r, now)            # fire idle, done agents (provenance-gated)
 
         # A managed surface absent from cmux entirely has been closed: unmanage it,
         # and drop the manager binding if it was the manager — so decmux notices a
@@ -287,6 +353,7 @@ class Session:
                                    "no manager bound — spawn one with /spawn-manager")
 
         self._manager_pulse(now)
+        self._momentum_step(now, rows)
         if self.pin:
             self._pin(rows)
         self.store.prune_absent(present)
