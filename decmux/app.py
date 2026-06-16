@@ -654,7 +654,10 @@ def repl(workspace_uuid: str, *, notify: bool = True) -> int:
     print("Enter sends · Shift+Enter / Alt+Enter for a newline · /help · /quit")
     _startup_guide(st.store)
     try:
-        with patch_stdout():
+        # raw=True: keep our SGR color codes intact. The default StdoutProxy routes
+        # background/print output through Output.write(), which sanitizes ESC to '?'
+        # (the "messages show up garbled / ?[2m" bug) — write_raw preserves them.
+        with patch_stdout(raw=True):
             while True:
                 words, meta = _completions(st.store)
                 completer = WordCompleter(words, meta_dict=meta, sentence=True)

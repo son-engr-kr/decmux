@@ -11,7 +11,7 @@ from decmux.store import Store
 
 @pytest.fixture
 def st(tmp_path, monkeypatch):
-    monkeypatch.setattr(bus, "_deliver", lambda *a: None)
+    monkeypatch.setattr(bus, "_deliver", lambda *a: True)
     monkeypatch.setattr(bus, "_ws_ref", lambda store: "")
     return app.AppState(Store("ws-test", root=tmp_path))
 
@@ -200,7 +200,7 @@ def test_repl_end_to_end_quit(tmp_path, monkeypatch):
 
     monkeypatch.setenv("DECMUX_STATE_DIR", str(tmp_path))
     monkeypatch.setattr(session_mod.Session, "run", lambda self, *a, **k: None)  # no cmux
-    monkeypatch.setattr(bus, "_deliver", lambda *a: None)
+    monkeypatch.setattr(bus, "_deliver", lambda *a: True)
     monkeypatch.setattr(bus, "_ws_ref", lambda store: "")
 
     with create_pipe_input() as pipe:

@@ -15,7 +15,7 @@ CALLER = {"workspace_id": "ws-test", "workspace_ref": "workspace:0",
 def wired(tmp_path, monkeypatch):
     monkeypatch.setenv("DECMUX_STATE_DIR", str(tmp_path))
     monkeypatch.setattr(cli, "_caller", lambda: CALLER)
-    monkeypatch.setattr(bus, "_deliver", lambda *a: None)
+    monkeypatch.setattr(bus, "_deliver", lambda *a: True)
     monkeypatch.setattr(bus, "_ws_ref", lambda store: "")
     monkeypatch.setattr(bus, "resolve_sender", lambda store: "you")
     return tmp_path

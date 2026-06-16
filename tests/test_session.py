@@ -17,7 +17,7 @@ def wired(tmp_path, monkeypatch):
     """A session whose cmux I/O is captured, not executed."""
     delivers: list[tuple[str, str]] = []
     notifies: list[tuple] = []
-    monkeypatch.setattr(bus, "_deliver", lambda sref, ws_ref, text: delivers.append((sref, text)))
+    monkeypatch.setattr(bus, "_deliver", lambda sref, ws_ref, text: delivers.append((sref, text)) or True)
     monkeypatch.setattr(bus, "_ws_ref", lambda store: "")
     monkeypatch.setattr(cmux, "run", lambda *a: notifies.append(a))
     store = Store("ws-test", root=tmp_path)

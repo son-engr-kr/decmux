@@ -228,6 +228,13 @@ _BUSY_STRONG = re.compile(
 _BUSY_GERUND = re.compile(r"\b\w+ing…")
 
 
+def looks_generating(text: str) -> bool:
+    """True when the screen shows the LLM actively streaming (a strong busy signal:
+    the 'esc to interrupt' hint or the live token meter). Typing into a surface in
+    this state interleaves with its output and garbles it, so delivery must skip it."""
+    return bool(text) and bool(_BUSY_STRONG.search(text))
+
+
 def _screen_status(text: str) -> str | None:
     """Authoritative working/idle from the agent's screen — CPU is a poor proxy
     (a thinking agent uses ~0% CPU; a background process trips a high CPU).

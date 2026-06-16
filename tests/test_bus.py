@@ -19,7 +19,7 @@ def s(tmp_path):
 @pytest.fixture
 def recorder(monkeypatch):
     calls: list[tuple[str, str]] = []
-    monkeypatch.setattr(bus, "_deliver", lambda sref, ws_ref, text: calls.append((sref, text)))
+    monkeypatch.setattr(bus, "_deliver", lambda sref, ws_ref, text: calls.append((sref, text)) or True)
     monkeypatch.setattr(bus, "_ws_ref", lambda store: "")
     return calls
 
@@ -350,3 +350,41 @@ def test_despawn_graceful_marks_releasing(s, recorder):
     assert res["releasing"] and not res["closed"]
     assert s.managed_row("w1")["status"] == "releasing"
     assert recorder and "contract ending" in recorder[-1][1]   # wrap-up delivered
+
+
+# --- de-mix: never type into a surface that is actively generating ---
+
+def test_looks_generating():
+    from decmux import watch
+    assert watch.looks_generating("✻ Deciphering… (esc to interrupt)") is True
+    assert watch.looks_generating("↓ 12k tokens") is True
+    assert watch.looks_generating("Cogitated for 1m 51s") is False   # past tense, done
+    assert watch.looks_generating("") is False
+
+
+def test_deliver_skips_a_generating_surface(monkeypatch):
+    monkeypatch.setattr(cmux, "read_screen", lambda *a, **k: "✻ Working… (esc to interrupt)")
+    sent: list = []
+    monkeypatch.setattr(cmux, "run", lambda *a: sent.append(a))
+    assert bus._deliver("surface:9", "", "hello") is False     # generating -> typed nothing
+    assert not any(a and a[0] == "send" for a in sent)
+
+
+def test_deliver_types_into_idle_surface(monkeypatch):
+    monkeypatch.setattr(cmux, "read_screen", lambda *a, **k: "idle · /clear to save 512k tokens")
+    sent: list = []
+    monkeypatch.setattr(cmux, "run", lambda *a: sent.append(a))
+    assert bus._deliver("surface:9", "", "hello") is True
+    assert any(a and a[0] == "send" for a in sent)
+
+
+def test_dispatch_requeues_when_surface_busy(s, monkeypatch):
+    # idle in the store, but a fresh read shows it generating -> park, don't garble
+    monkeypatch.setattr(bus, "_ws_ref", lambda store: "")
+    monkeypatch.setattr(cmux, "read_screen", lambda *a, **k: "✻ … esc to interrupt")
+    monkeypatch.setattr(cmux, "run", lambda *a: None)
+    add_agent(s, uuid="m1", ref="surface:9", name="manager", state="idle")
+    s.bind_manager(surface_uuid="m1", surface_ref="surface:9", cwd="/x")
+    res = bus.send(s, "please run tests", to="manager", frm="you")
+    assert res["delivered"] == 0 and res["queued"] == 1          # requeued, not typed
+    assert s.pending_outbox("m1")

@@ -11,9 +11,16 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import threading
 import time
 
-from . import assets, cmux
+from . import assets, cmux, watch
+
+# Only one thread types into a surface at a time. The REPL thread (your messages) and
+# the supervision thread (outbox flush, pulse re-delivery, pokes) both call _deliver;
+# without this lock their `cmux send`s interleave character-by-character and garble
+# the agent's screen.
+_SEND_LOCK = threading.Lock()
 
 _HUMAN = {"you", "user", "me", "human"}
 _ALL = {"all", "everyone", "broadcast"}
@@ -139,18 +146,35 @@ _SEND_SETTLE = 0.25   # seconds: let sent text land in the input before Enter
 _SUBMIT_RETRIES = 2   # re-press Enter if the line is still sitting unsent
 
 
-def _deliver(surface_ref: str, ws_ref: str, text: str) -> None:
-    base = (["--workspace", ws_ref] if ws_ref else []) + ["--surface", surface_ref]
-    cmux.run("send", *base, text)
-    # Pressing Enter immediately races ahead of the text settling in the input,
-    # leaving the line unsent. Settle first, press Enter, then verify the line
-    # actually submitted and re-press if it's still sitting in the input.
-    tail = next((ln.strip() for ln in reversed(text.splitlines()) if ln.strip()), "")[:48]
-    for _ in range(_SUBMIT_RETRIES + 1):
-        time.sleep(_SEND_SETTLE)
-        cmux.run("send-key", *base, "Enter")
-        if _line_submitted(surface_ref, ws_ref, tail):
-            return
+def _surface_generating(surface_ref: str, ws_ref: str) -> bool:
+    """Is the surface's LLM actively streaming right now? (A fresh screen read — the
+    stored state lags a tick, so this is the authoritative just-before-typing check.)"""
+    try:
+        text = cmux.read_screen(surface_ref, workspace=ws_ref or None, lines=12)
+    except (subprocess.CalledProcessError, OSError):
+        return False
+    return watch.looks_generating(text)
+
+
+def _deliver(surface_ref: str, ws_ref: str, text: str) -> bool:
+    """Type a message into a surface and submit it. Held under _SEND_LOCK so threads
+    never interleave; returns False (typed nothing) if the surface is generating right
+    now, so the caller requeues instead of garbling a live stream."""
+    with _SEND_LOCK:
+        if _surface_generating(surface_ref, ws_ref):
+            return False
+        base = (["--workspace", ws_ref] if ws_ref else []) + ["--surface", surface_ref]
+        cmux.run("send", *base, text)
+        # Pressing Enter immediately races ahead of the text settling in the input,
+        # leaving the line unsent. Settle first, press Enter, then verify the line
+        # actually submitted and re-press if it's still sitting in the input.
+        tail = next((ln.strip() for ln in reversed(text.splitlines()) if ln.strip()), "")[:48]
+        for _ in range(_SUBMIT_RETRIES + 1):
+            time.sleep(_SEND_SETTLE)
+            cmux.run("send-key", *base, "Enter")
+            if _line_submitted(surface_ref, ws_ref, tail):
+                return True
+        return True
 
 
 def _line_submitted(surface_ref: str, ws_ref: str, tail: str) -> bool:
@@ -213,18 +237,20 @@ def _dispatch_body(store, targets: list[tuple[str, str, str]], body: str,
     now = time.time()
     for sref, suuid, _name in targets:
         info = store.agent_by_ref(sref)
-        if _should_queue(info, now):
+        sent = False
+        if not _should_queue(info, now):
+            try:
+                sent = _deliver(sref, ws_ref, body)   # False if the surface is generating
+            except (subprocess.CalledProcessError, OSError):
+                sent = False
+        if sent:
+            delivered += 1
+        else:                                          # busy / working -> park it
             rowid = store.enqueue_outbox(
                 surface_uuid=suuid, surface_ref=sref, body=body, frm=frm, task_id=task_id,
             )
             if rowid:
                 queued += 1
-            continue
-        try:
-            _deliver(sref, ws_ref, body)
-            delivered += 1
-        except (subprocess.CalledProcessError, OSError):
-            pass
     if task_id and delivered:
         store.increment_task_delivered(task_id, delivered)
     return delivered, queued
@@ -636,7 +662,8 @@ def flush_outbox(store, surface_uuid: str, surface_ref: str, ws_ref: str,
         task_counts: dict[int, int] = {}
         for row in verbatim[:limit]:
             try:
-                _deliver(surface_ref, ws_ref, row["body"])
+                if not _deliver(surface_ref, ws_ref, row["body"]):
+                    break                              # surface started generating; retry next tick
             except (subprocess.CalledProcessError, OSError):
                 break
             sent_ids.append(row["id"])
@@ -648,7 +675,8 @@ def flush_outbox(store, surface_uuid: str, surface_ref: str, ws_ref: str,
         return len(sent_ids)
     if digests:
         try:
-            _deliver(surface_ref, ws_ref, _render_digest(digests))
+            if not _deliver(surface_ref, ws_ref, _render_digest(digests)):
+                return 0
         except (subprocess.CalledProcessError, OSError):
             return 0
         store.mark_outbox_delivered([r["id"] for r in digests])
