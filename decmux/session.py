@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import queue
+import sqlite3
 import subprocess
 import threading
 import time
@@ -397,7 +398,17 @@ class Session:
         n = 0
         try:
             while True:
-                self.tick()
+                try:
+                    self.tick()
+                except sqlite3.OperationalError as e:
+                    # A momentary "database is locked" (a WAL checkpoint, a burst of
+                    # concurrent writes) must never kill supervision. A dead loop stops
+                    # classifying state, so messages to a busy agent stop being queued
+                    # and interrupt it instead — exactly the failure this guards. Skip
+                    # this tick and retry next; re-raise anything that is not lock
+                    # contention so real bugs still surface.
+                    if "locked" not in str(e).lower():
+                        raise
                 n += 1
                 if ticks and n >= ticks:
                     return 0

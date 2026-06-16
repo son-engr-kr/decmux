@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 
 import pytest
@@ -251,3 +252,30 @@ def test_next_wakeup_none_when_idle_and_empty(wired):
     assert ts is None and label == ""
     sess._persist_next_wakeup(now=0.0, rows=[])
     assert store.get_meta("next_wakeup_ts") == ""
+
+
+def test_run_survives_transient_locked_tick(wired, monkeypatch):
+    # Regression: a momentary "database is locked" must NOT kill the supervision
+    # loop (a dead loop stops classifying state -> messages interrupt busy agents).
+    sess, store, *_ = wired
+    monkeypatch.setattr(sess, "start_events", lambda: None)
+    n = {"c": 0}
+
+    def flaky_tick(now=None):
+        n["c"] += 1
+        if n["c"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(sess, "tick", flaky_tick)
+    assert sess.run(interval=0.0, ticks=2) == 0      # locked tick skipped, loop continued
+    assert n["c"] == 2
+
+
+def test_run_reraises_non_lock_errors(wired, monkeypatch):
+    # a real OperationalError (not lock contention) must still surface, not be swallowed
+    sess, store, *_ = wired
+    monkeypatch.setattr(sess, "start_events", lambda: None)
+    monkeypatch.setattr(sess, "tick",
+                        lambda now=None: (_ for _ in ()).throw(
+                            sqlite3.OperationalError("no such table: tasks")))
+    with pytest.raises(sqlite3.OperationalError):
+        sess.run(interval=0.0, ticks=2)

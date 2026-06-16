@@ -131,3 +131,16 @@ def test_chat_and_transition_watermarks(tmp_path):
     s.record_transition(surface_uuid="a", title="A", from_state="idle", to_state="stuck")
     tr = s.transitions_after(base_tr)
     assert len(tr) == 1 and tr[0]["to_state"] == "stuck"
+
+
+def test_writes_autocommit_visible_across_connections(tmp_path):
+    # Regression: the "database is locked" crash came from a connection holding the
+    # WAL writer open (uncommitted) across slow cmux I/O / the REPL prompt block.
+    # With isolation_level=None every statement commits immediately, so a write is
+    # visible from a fresh connection with NO explicit commit, and no writer is held.
+    a = Store("ws-test", root=tmp_path)
+    a.set_meta("k", "v")                       # note: no a.commit()
+    a.mark_managed("u1", role="agent")         # multi-table write, still no commit
+    b = Store("ws-test", root=tmp_path)
+    assert b.get_meta("k") == "v"
+    assert b.is_managed("u1")

@@ -101,17 +101,21 @@ class Store:
         self.dir = root / workspace_uuid
         self.files_dir = self.dir / "files"
         self.dir.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.dir / "store.db")
+        # Autocommit (isolation_level=None): every statement commits on its own, so a
+        # write transaction is never held open across the slow cmux subprocess I/O
+        # that delivery does (send + settle + Enter, retried — seconds per message).
+        # Holding the single WAL writer lock across those seconds is what produced
+        # "database is locked": a waiting thread blew past busy_timeout and the whole
+        # supervisor thread died. With per-statement commits the writer lock is held
+        # for microseconds, so the threads (supervision writes, REPL input writes, the
+        # live feed reads) never collide longer than busy_timeout. Each thread still
+        # needs its own Store instance (sqlite connections are not shared across them).
+        self.db = sqlite3.connect(self.dir / "store.db", isolation_level=None)
         self.db.row_factory = sqlite3.Row
-        # WAL + a busy timeout let the REPL's threads each hold their own Store
-        # connection to the same file (supervision writes, input writes, the live
-        # feed reads) without "database is locked" errors. Each thread must use its
-        # own Store instance (sqlite connections are not shared across threads).
         self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.execute("PRAGMA busy_timeout=3000")
+        self.db.execute("PRAGMA busy_timeout=5000")
         self.db.executescript(SCHEMA)
         self._migrate()
-        self.db.commit()
 
     def _migrate(self) -> None:
         """Additive column migrations for stores created before a column existed."""
