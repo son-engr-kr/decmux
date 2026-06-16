@@ -145,6 +145,16 @@ def _spark(values: list[int]) -> str:
     return "".join("·" if v == 0 else _SPARK[min(7, int(v / mx * 7 + 0.5))] for v in values)
 
 
+def _spark_fixed(values, vmax: float = 100.0) -> str:
+    """Sparkline on a fixed 0..vmax scale (None = gap), for absolute series like %."""
+    return "".join("·" if v is None else _SPARK[min(7, max(0, int(v / vmax * 7 + 0.5)))]
+                   for v in values)
+
+
+def _color_pct(used: float, s: str) -> str:
+    return _red(s) if used >= 85 else _yel(s) if used >= 60 else _grn(s)
+
+
 class AppState:
     def __init__(self, store: Store) -> None:
         # This Store belongs to the thread that constructed AppState (the prompt
@@ -381,21 +391,35 @@ def _report(store, n: int) -> None:
 
 
 def _usage(store) -> None:
-    w = store.usage_window(hours=5.0)
+    # headline: the usage-limit % scraped from the agent screen ("N% used"/"N% left")
+    lp = store.latest_usage_pct()
+    if lp:
+        used = lp["used"]
+        series = store.usage_pct_series(hours=5.0, buckets=40)
+        print(_b("  5h usage limit") + _gray("   (scraped from the agent screen)"))
+        print("  " + _color_pct(used, _spark_fixed(series)) + _gray("   oldest → now"))
+        print("  " + _color_pct(used, f"{used:.0f}% used") + _gray(f"  ·  {100 - used:.0f}% left"))
+        rate = store.usage_pct_rate(minutes=60.0)
+        if rate is not None and rate > 0.1:
+            print("  " + _yel(f"→ +{rate:.0f}%/h — at this rate, 100% in ~{(100 - used) / rate:.1f}h"))
+        elif rate is not None:
+            print(_gray("  → usage flat / not rising recently"))
+        else:
+            print(_gray("  → (collecting history to project the rate…)"))
+        print(_gray("  reset time isn't on screen — check claude.ai for the window reset"))
+        print()
+    # secondary: decmux's own activity trend (turns / tool calls)
     counts = store.usage_series(hours=5.0, buckets=40)
     rate = store.usage_rate(minutes=30.0)
-    print(_b("  usage — rolling 5h")
-          + _gray("   (activity: turns = agent turns, tools = tool calls)"))
+    w = store.usage_window(hours=5.0)
+    print(_b("  activity — rolling 5h") + _gray("   (turns = agent turns, tools = tool calls)"))
     print("  " + _cyan(_spark(counts)) + _gray("   oldest → now"))
     print(_gray(f"  window so far: {w['turns']} turns · {w['tools']} tool calls"))
-    tph, oph = rate["turns_per_hr"], rate["tools_per_hr"]
-    if tph or oph:
-        print(_gray(f"  recent rate (30m): {tph:.0f} turns/hr · {oph:.0f} tools/hr"))
-        print("  " + _yel(f"→ at this rate, a full 5h session ≈ "
-                          f"{tph * 5:.0f} turns · {oph * 5:.0f} tool calls"))
-    else:
-        print(_gray("  (no activity in the last 30m)"))
-    print(_gray("  (activity trend — not Claude's token limit; % of the 5h cap is coming)"))
+    if rate["turns_per_hr"] or rate["tools_per_hr"]:
+        print(_gray(f"  recent rate (30m): {rate['turns_per_hr']:.0f} turns/hr · "
+                    f"{rate['tools_per_hr']:.0f} tools/hr"))
+    if not lp:
+        print(_gray("  (no usage-% yet — appears once an agent screen shows 'N% used' / 'N% left')"))
 
 
 def _handle(st: AppState, line: str) -> bool:

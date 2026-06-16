@@ -274,6 +274,7 @@ class Watcher:
         self._activity: float = 0.0        # last event-stream activity for this workspace
         self._screen_checked: dict[str, float] = {}
         self._screen_state: dict[str, tuple[str, float]] = {}
+        self.usage: dict[str, tuple[float, float]] = {}   # surface -> (used%, ts), from the screen
         self.model: dict[str, str] = {}
         self.effort: dict[str, str] = {}
         self.present_surfaces: set[str] = set()   # all surface UUIDs in this workspace
@@ -294,6 +295,9 @@ class Watcher:
         except subprocess.CalledProcessError:
             return None  # surface not readable this tick (detached / not a terminal)
         self.model[surface.key], self.effort[surface.key] = _parse_model_effort(text)
+        used = errors.parse_usage_used(text)          # "N% used" (claude) / "N% left" (codex)
+        if used is not None:
+            self.usage[surface.key] = (used, now)
         # errors/budget win; otherwise the screen tells working vs idle (CPU lies:
         # a thinking agent is ~0% CPU, an idle one with a side process is not).
         detected = errors.detect(text) or _screen_status(text)

@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS task_comments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id INTEGER, ts REAL, author TEXT, kind TEXT, body TEXT
 );
+CREATE TABLE IF NOT EXISTS usage_pct (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, used REAL);
 CREATE TABLE IF NOT EXISTS outbox (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL, surface_uuid TEXT, surface_ref TEXT,
@@ -690,6 +691,41 @@ class Store:
         ):
             counts[min(buckets - 1, int((r["ts"] - start) / width))] += 1
         return counts
+
+    # --- usage limit %: scraped from the agent screen ("N% used"/"N% left") ---
+    def add_usage_sample(self, used: float, now: float | None = None) -> None:
+        self.db.execute("INSERT INTO usage_pct (ts, used) VALUES (?,?)",
+                        (now if now is not None else time.time(), float(used)))
+
+    def latest_usage_pct(self) -> dict | None:
+        r = self.db.execute("SELECT ts, used FROM usage_pct ORDER BY id DESC LIMIT 1").fetchone()
+        return {"ts": r["ts"], "used": r["used"]} if r else None
+
+    def usage_pct_series(self, hours: float = 5.0, buckets: int = 40,
+                         now: float | None = None) -> list:
+        """Latest used-% in each time bucket (None where there's no sample), for a graph."""
+        now = now if now is not None else time.time()
+        start = now - hours * 3600
+        width = (hours * 3600) / buckets
+        series: list = [None] * buckets
+        for r in self.db.execute(
+            "SELECT ts, used FROM usage_pct WHERE ts>=? ORDER BY ts", (start,)
+        ):
+            series[min(buckets - 1, int((r["ts"] - start) / width))] = r["used"]
+        return series
+
+    def usage_pct_rate(self, minutes: float = 60.0, now: float | None = None) -> float | None:
+        """Change in used-% per hour over the recent window (positive = filling up)."""
+        now = now if now is not None else time.time()
+        rows = self.db.execute(
+            "SELECT ts, used FROM usage_pct WHERE ts>=? ORDER BY ts", (now - minutes * 60,)
+        ).fetchall()
+        if len(rows) < 2:
+            return None
+        dt = rows[-1]["ts"] - rows[0]["ts"]
+        if dt <= 0:
+            return None
+        return (rows[-1]["used"] - rows[0]["used"]) / (dt / 3600.0)
 
     def usage_rate(self, minutes: float = 30.0, now: float | None = None) -> dict:
         """Recent turns/tools per hour (the basis for the projection)."""

@@ -79,6 +79,7 @@ class Session:
         self._reap_notified: set[str] = set()
         self._momentum_armed = False
         self._momentum_ts = 0.0
+        self._usage_sampled_at = 0.0
 
         self._events_proc = None
         self._q: queue.Queue = queue.Queue()
@@ -384,6 +385,14 @@ class Session:
         self._manager_pulse(now)
         self._momentum_step(now, rows)
         self._persist_next_wakeup(now, rows)
+        # sample the usage-limit % scraped from agent screens (account-wide -> the
+        # most-constraining fresh value), throttled so the series isn't one row/tick.
+        if now - self._usage_sampled_at >= 30.0:
+            fresh = [u for k in present
+                     if (u := self.watcher.usage.get(k)) and now - u[1] < 120.0]
+            if fresh:
+                self.store.add_usage_sample(max(v for v, _ in fresh), now=now)
+                self._usage_sampled_at = now
         if self.pin:
             self._pin(rows)
         self.store.prune_absent(present)

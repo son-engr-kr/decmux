@@ -160,3 +160,16 @@ def test_usage_series_window_and_rate(tmp_path):
     assert w["turns"] == 5 and w["tools"] == 1
     r = s.usage_rate(minutes=30.0, now=now)
     assert r["turns_per_hr"] == 10.0 and r["tools_per_hr"] == 2.0   # 5 turns / 0.5h
+
+
+def test_usage_pct_samples_series_and_rate(tmp_path):
+    import time
+    s = Store("ws-test", root=tmp_path)
+    now = time.time()
+    s.add_usage_sample(20.0, now=now - 3600)        # 1h ago: 20%
+    s.add_usage_sample(50.0, now=now)               # now: 50%  -> +30%/h
+    s.commit()
+    assert s.latest_usage_pct()["used"] == 50.0
+    ser = s.usage_pct_series(hours=5.0, buckets=10, now=now)
+    assert ser[-1] == 50.0 and any(v == 20.0 for v in ser)
+    assert abs(s.usage_pct_rate(minutes=120.0, now=now) - 30.0) < 0.5
