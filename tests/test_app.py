@@ -18,7 +18,7 @@ def st(tmp_path, monkeypatch):
 
 def test_plain_line_sends_to_target_and_tracks(st, capsys):
     assert app._handle(st, "please do x") is True
-    assert "-> manager" in capsys.readouterr().out
+    assert "→ manager" in capsys.readouterr().out
     assert any(t["body"] == "please do x" for t in st.store.list_tasks())
 
 

@@ -11,6 +11,7 @@ watch real agent surfaces; this is the de-mixed input channel plus live signals.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 import time
@@ -29,7 +30,7 @@ _CMD_META = {
     "/spawn-manager": "create the manager in a new surface",
     "/spawn": "add a worker  (/spawn <name> [short|long|full])",
     "/despawn": "release an agent  (/despawn <name> [now])",
-    "/goal": "set the workspace goal (briefs the manager)",
+    "/goal": "set the goal & run the autonomous loop toward it (alone: show it)",
     "/to": "set message target (manager | you | <agent> | all)",
     "/status": "agent states (from the supervisor)",
     "/tasks": "open tasks  (/tasks closed for finished)",
@@ -64,7 +65,7 @@ HELP = """commands:  (Enter sends · Shift+Enter or Alt+Enter = newline)
   /spawn-manager    create the manager in a new surface
   /spawn [name] [t] add a worker (t = short|long|full term; default short)
   /despawn <name>   release an agent (graceful; add 'now' to close at once)
-  /goal <text>      set the workspace goal (briefs the manager)
+  /goal <text>      set the goal & run the autonomous loop toward it (/goal = show)
   /to <name>        set target (manager | human | <agent> | all)
   /status           agent states (from the supervisor)
   /feed [n]         recent human-facing chat
@@ -73,6 +74,61 @@ HELP = """commands:  (Enter sends · Shift+Enter or Alt+Enter = newline)
 
 _GLYPH = {"working": "●", "idle": "○", "stuck": "▲", "error": "✖",
           "dead": "☠", "budget": "$", "blocked-on-decision": "?"}
+
+# --- ANSI palette: the REPL is a TTY; flat white is the readability complaint. ---
+# Honors NO_COLOR. Wrap whole strings (the SGR codes reset at the end) so column
+# widths are padded BEFORE coloring.
+_NO_COLOR = os.environ.get("NO_COLOR") is not None
+
+
+def _sgr(code: str, s: str) -> str:
+    return s if _NO_COLOR else f"\x1b[{code}m{s}\x1b[0m"
+
+
+def _dim(s):  return _sgr("2", s)
+def _b(s):    return _sgr("1", s)
+def _cyan(s): return _sgr("36", s)
+def _grn(s):  return _sgr("32", s)
+def _yel(s):  return _sgr("33", s)
+def _red(s):  return _sgr("31", s)
+def _mag(s):  return _sgr("35", s)
+def _gray(s): return _sgr("90", s)
+
+_STATE_SGR = {"working": "32", "idle": "36", "stuck": "33", "error": "31",
+              "dead": "31", "budget": "35", "blocked-on-decision": "33"}
+_TASK_SGR = {"triage": "33", "open": "36", "in_progress": "33",
+             "done": "32", "answered": "32"}
+
+
+def _state_c(state: str, s: str | None = None) -> str:
+    return _sgr(_STATE_SGR.get(state, "37"), s if s is not None else (state or "?"))
+
+
+def _task_c(status: str, s: str | None = None) -> str:
+    return _sgr(_TASK_SGR.get(status, "37"), s if s is not None else status)
+
+
+def _sender_c(frm: str) -> str:
+    f = (frm or "").lower()
+    if f == "manager":
+        return _cyan(frm)
+    if f == "decmux":
+        return _yel(frm)
+    if f in ("human", "you", "user", "me"):
+        return _grn(frm)
+    return _mag(frm)                       # worker agents
+
+
+def _render_message(frm: str, body: str, dst: str | None = None) -> None:
+    """A routed message, readably: a colored sender header + a left gutter that
+    preserves the original line breaks (the 'formatting is ignored' complaint)."""
+    head = _b(_sender_c(frm))
+    if dst and dst.lower() not in ("human", "you"):
+        head += _gray(f" → {dst}")
+    print()
+    print(head)
+    for ln in (body or "").splitlines() or [""]:
+        print(_gray(" │ ") + ln)
 
 
 class AppState:
@@ -103,7 +159,7 @@ def _int(rest: str, default: int) -> int:
 def _status(store) -> None:
     agents = store.list_agents()
     if not agents:
-        print("  (no agents in this workspace)")
+        print(_gray("  (no agents in this workspace)"))
         return
     kinds = store.managed_kinds()
     cwd, u = store.get_meta("cwd"), store.usage()
@@ -113,14 +169,16 @@ def _status(store) -> None:
     if u.get("turns") or u.get("tools"):
         head.append(f"usage {u.get('turns') or 0} turns / {u.get('tools') or 0} tools")
     if head:
-        print("  " + "   ·   ".join(head))
+        print(_gray("  " + "   ·   ".join(head)))
     for a in agents:
         bk = f"·{a['busy_kind']}" if a.get("busy_kind") else ""
-        kind = kinds.get(a["surface_uuid"], "")
-        model = a.get("model") or ""
-        eff = f" [{a['effort']}]" if a.get("effort") else ""
-        print(f"  {(a['state'] or '?') + bk:16} {bus._clean_name(a['title']):18} "
-              f"{a['surface_ref']:11} {kind:7} {model}{eff}")
+        glyph = _GLYPH.get(a["state"], "·")
+        st_txt = f"{glyph} {(a['state'] or '?')}{bk}".ljust(18)
+        model = (a.get("model") or "") + (f" [{a['effort']}]" if a.get("effort") else "")
+        print("  " + _state_c(a["state"], st_txt) + " "
+              + _b(bus._clean_name(a["title"]).ljust(18)) + " "
+              + _gray((a["surface_ref"] or "").ljust(11)) + " "
+              + _gray(kinds.get(a["surface_uuid"], "").ljust(7)) + " " + _dim(model))
 
 
 _CLOSED = {"done", "answered"}
@@ -129,49 +187,58 @@ _CLOSED = {"done", "answered"}
 def _tasks(store, closed: bool = False) -> None:
     rows = [t for t in store.list_tasks() if (t["status"] in _CLOSED) == closed]
     if not rows:
-        print("  (no closed tasks)" if closed else "  (no open tasks — /tasks closed for finished)")
+        print(_gray("  (no closed tasks)" if closed
+                    else "  (no open tasks — /tasks closed for finished)"))
         return
-    print(f"  {'closed' if closed else 'open'} tasks:")
+    print(_b(f"  {'closed' if closed else 'open'} tasks:"))
     for t in rows:
-        who = f" @{t['assignee']}" if t.get("assignee") else ""
+        who = _gray(f" @{t['assignee']}") if t.get("assignee") else ""
+        idtag = _b(f"#{t['id']}") + " " + _task_c(t["status"], f"[{t['status']}]")
         if closed:
-            tail = f"  => {(t['result'] or '').strip()[:44]}" if t.get("result") else ""
-            print(f"  #{t['id']} [{t['status']}]{who} {t['body'][:46]}{tail}")
+            tail = _dim(f"  => {(t['result'] or '').strip()[:44]}") if t.get("result") else ""
+            print(f"  {idtag}{who} {t['body'][:46]}{tail}")
         else:
             prog = [ln for ln in (t.get("progress") or "").splitlines() if ln.strip()]
-            last = f"   · {prog[-1].lstrip('• ')[:46]}" if prog else ""
-            print(f"  #{t['id']} [{t['status']}]{who} -> {t['to_whom']}: {t['body'][:46]}{last}")
+            last = _dim(f"   · {prog[-1].lstrip('• ')[:46]}") if prog else ""
+            print(f"  {idtag}{who} {_gray(t['to_whom'])}: {t['body'][:46]}{last}")
     if not closed:
         n = sum(1 for t in store.list_tasks() if t["status"] in _CLOSED)
         if n:
-            print(f"  ({n} closed — /tasks closed · /task <id> for detail)")
+            print(_gray(f"  ({n} closed — /tasks closed · /task <id> for detail)"))
 
 
 def _task_detail(store, tid: int) -> None:
     try:
         t = store.get_task(tid)
     except AssertionError:
-        print(f"  no task #{tid}")
+        print(_red(f"  no task #{tid}"))
         return
-    who = f" @{t['assignee']}" if t.get("assignee") else ""
-    print(f"  #{t['id']} [{t['status']}] {t.get('kind') or 'task'} -> {t['to_whom']}{who}")
-    print(f"  {t['body']}")
+    who = _gray(f" @{t['assignee']}") if t.get("assignee") else ""
+    print("  " + _b(f"#{t['id']}") + " " + _task_c(t["status"], f"[{t['status']}]")
+          + f" {t.get('kind') or 'task'} {_gray('→ ' + t['to_whom'])}" + who)
+    print("  " + t["body"])
     if t.get("result"):
-        print(f"  result: {t['result']}")
-    print("  timeline:")
+        print("  " + _grn("result: ") + t["result"])
+    print(_gray("  timeline:"))
     for c in store.task_comments(tid):
         ts = time.strftime("%H:%M", time.localtime(c["ts"]))
-        print(f"    {ts}  {c['author']} [{c['kind']}]  {c['body'][:70]}")
+        lines = (c["body"] or "").splitlines() or [""]
+        print(_gray(f"    {ts} ") + _sender_c(c["author"]) + " "
+              + _dim(f"[{c['kind']}]") + "  " + lines[0])
+        for ln in lines[1:]:
+            print("          " + ln)
 
 
 def _feed(store, n: int) -> None:
     for c in store.recent_chat(kind="chat", limit=n):
-        print(f"  {c['frm']} -> {c['dst']}: {c['body'][:100]}")
+        _render_message(c["frm"], c["body"], c["dst"])
 
 
 def _report(store, n: int) -> None:
     for t in store.recent_transitions(n):
-        print(f"  {t['from_state']} -> {t['to_state']}  {t['title']}")
+        print("  " + _state_c(t["from_state"], (t["from_state"] or "?")) + _gray(" → ")
+              + _state_c(t["to_state"], (t["to_state"] or "?")) + "  "
+              + _dim(bus._clean_name(t["title"] or "")))
 
 
 def _handle(st: AppState, line: str) -> bool:
@@ -207,20 +274,30 @@ def _handle(st: AppState, line: str) -> bool:
             if rest:
                 res = bus.send(st.store, rest, to="manager", frm="human")
                 st.thread = res.get("task")
-                print(f"-> new #{st.thread} (delivered {res.get('delivered', 0)}, "
-                      f"queued {res.get('queued', 0)})")
+                print(_dim(f"→ new #{st.thread} (delivered {res.get('delivered', 0)}, "
+                           f"queued {res.get('queued', 0)})"))
             else:
-                print("new thread — your next message starts a fresh task")
+                print(_gray("new thread — your next message starts a fresh task"))
         elif cmd == "feed":
             _feed(st.store, _int(rest, 20))
         elif cmd == "report":
             _report(st.store, _int(rest, 20))
-        elif cmd == "goal":
+        elif cmd in ("goal", "loop"):
+            # /goal IS the autonomous loop: set it and decmux drives the team toward
+            # it (momentum nudges when idle; the toolbar shows the next wakeup).
             if not rest:
-                print("usage: /goal <text>")
+                g = st.store.get_goal()
+                if g:
+                    print(_b("goal: ") + g)
+                    print(_gray("  decmux is running the loop toward this — "
+                                "toolbar shows the next wakeup. /goal <text> to change."))
+                else:
+                    print(_gray("usage: /goal <text>  — sets the goal and runs the "
+                                "autonomous loop toward it"))
             else:
                 res = bus.send(st.store, "/goal " + rest, to="manager", frm="human")
-                print(f"goal set (delivered {res.get('delivered', 0)}, queued {res.get('queued', 0)})")
+                print(_grn("loop running") + _gray(f" toward: {rest}  "
+                      f"(delivered {res.get('delivered', 0)}, queued {res.get('queued', 0)})"))
         elif cmd in ("spawn", "spawn-manager"):
             parts = rest.split()
             term = parts.pop() if parts and parts[-1] in ("short", "long", "full") else "short"
@@ -254,18 +331,18 @@ def _handle(st: AppState, line: str) -> bool:
     # chatting the manager continues the current task thread (re-briefed each time)
     if st.target == "manager" and st.thread is not None and _task_open(st.store, st.thread):
         res = bus.continue_thread(st.store, st.thread, line, frm="human")
-        print(f"-> #{st.thread} (delivered {res['delivered']}, queued {res['queued']})")
+        print(_dim(f"→ #{st.thread} (delivered {res['delivered']}, queued {res['queued']})"))
         return True
     res = bus.send(st.store, line, to=st.target, frm="human")
     if res.get("withheld_status"):
-        print("withheld (status-only downward); use the agent's name or --force")
+        print(_yel("withheld (status-only downward); use the agent's name or --force"))
         return True
     if st.target == "manager" and res.get("task"):
         st.thread = res["task"]            # a fresh message to the manager opens a thread
     tid = f" #{res['task']}" if res.get("task") else ""
-    extra = " [gated->manager]" if res.get("gated_to_manager") else ""
-    print(f"-> {res['dst']}{tid} (delivered {res['delivered']}, "
-          f"queued {res.get('queued', 0)}){extra}")
+    extra = " [gated→manager]" if res.get("gated_to_manager") else ""
+    print(_dim(f"→ {res['dst']}{tid} (delivered {res['delivered']}, "
+               f"queued {res.get('queued', 0)}){extra}"))
     return True
 
 
@@ -281,11 +358,12 @@ def _feed_poller(st: AppState) -> None:
             for c in store.chat_after(last_chat, kind="chat"):
                 last_chat = c["id"]
                 if c["frm"] != "human":           # incoming, not our own echo
-                    print(f"[{c['frm']}] {c['body']}")
+                    _render_message(c["frm"], c["body"])
             for t in store.transitions_after(last_tr):
                 last_tr = t["id"]
-                print(f"{_GLYPH.get(t['to_state'], '·')} {bus._clean_name(t['title'] or '')} "
-                      f"-> {t['to_state']}")
+                g = _GLYPH.get(t["to_state"], "·")
+                print(_state_c(t["to_state"],
+                               f"{g} {bus._clean_name(t['title'] or '')} → {t['to_state']}"))
         except sqlite3.OperationalError:
             pass   # a momentary lock must never kill the display thread
         time.sleep(1.5)

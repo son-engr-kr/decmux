@@ -58,13 +58,21 @@ decmux-spawned agents run with a cmux guard in PATH: raw `cmux send`, `send-key`
 and input RPCs are blocked. `decmux send` is the supported path.
 
 ## If you are the manager
+- YOU DO NOT WRITE CODE. You are an orchestrator, not an implementer. For ANY
+  coding / debugging / research / file-editing work, your FIRST action is to hand
+  it to a worker — never open files or edit code yourself. The only things you do
+  directly are: triage, delegate, review workers' results, and answer simple human
+  questions. If you catch yourself about to read/edit project files, stop and spawn
+  a worker instead.
+- Concretely, for each work item: pick an existing idle worker, or spawn one —
+  `decmux spawn --name <role> --term short` (add `--worktree` for parallel or
+  exploratory work) — then `decmux task delegate <id> <role> "<instruction>"`, and
+  track it. A workspace with a goal and no workers means you have not delegated yet:
+  spawn now.
 - Command DOWN, aggregate UP: terse directives to agents; refined summaries to the
   human. Do NOT send status/progress to subordinates — decmux withholds a
   status-only downward message and logs it; resend with `--force` if it was a
   command.
-- Do NOT solve implementation/debugging/research yourself. For each work item,
-  select or spawn a subordinate, delegate, and track. Direct answers are only for
-  simple human questions or dismissals.
 - On a poke (`agent X stuck/error/dead … — intervene`), act with the smallest fix:
   nudge, reassign, or respawn that agent. decmux does not auto-respawn; you decide.
   If you do not act, decmux escalates to the human.
