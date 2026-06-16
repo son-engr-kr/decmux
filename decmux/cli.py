@@ -480,6 +480,41 @@ def cmd_teardown(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_update(args: argparse.Namespace) -> int:
+    """Check GitHub for a newer decmux and install it (y/N), or just --check."""
+    from decmux import update as up
+    cur = up.current_version()
+    latest = up.latest_version()
+    if latest is None:
+        print(f"installed {cur}; couldn't reach GitHub to check for updates")
+        return 1
+    print(f"installed: {cur}    latest: {latest}")
+    if up._vtuple(latest) <= up._vtuple(cur):
+        print("up to date")
+        return 0
+    if up.is_editable() and not args.force:
+        print(f"editable/dev checkout — update with `git pull` "
+              f"(or --force to reinstall {latest} from GitHub)")
+        return 0
+    if args.check:
+        print(f"update available: {cur} -> {latest}  (run `decmux update`)")
+        return 0
+    if not args.yes:
+        try:
+            if input(f"update {cur} -> {latest}? [y/N] ").strip().lower() not in ("y", "yes"):
+                print("skipped")
+                return 0
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+    print(f"installing {latest}…")
+    if up.run_install(latest):
+        print(f"updated to {latest} — restart decmux")
+        return 0
+    print("update failed (uv tool install error)")
+    return 1
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     """Install (or --remove) the global Claude SessionStart hook that injects the
     decmux protocol into decmux-managed sessions (no skill file). The cmux guard is
@@ -619,6 +654,13 @@ def build_parser() -> argparse.ArgumentParser:
     pds.add_argument("--now", action="store_true", help="archive and close right away")
     pds.add_argument("--workspace")
     pds.set_defaults(func=cmd_despawn)
+
+    pup = sub.add_parser("update", help="check GitHub for a newer decmux and (y/N) install it")
+    pup.add_argument("--check", action="store_true", help="only report; don't install")
+    pup.add_argument("--yes", action="store_true", help="install without prompting")
+    pup.add_argument("--force", action="store_true",
+                     help="reinstall from GitHub even on an editable/dev checkout")
+    pup.set_defaults(func=cmd_update)
 
     psu = sub.add_parser("setup", help="install (or --remove) the global Claude SessionStart hook")
     psu.add_argument("--remove", action="store_true", help="uninstall the global hook (inverse of setup)")

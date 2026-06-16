@@ -573,6 +573,29 @@ def _startup_guide(store) -> None:
     )
 
 
+def _maybe_update() -> None:
+    """On startup: if GitHub has a newer version, ask to update (y/N). Skipped for a
+    dev/editable checkout and non-interactive runs. Runs before the prompt-toolkit
+    session, so a plain input() prompt is safe here."""
+    from . import update as _update
+    if not _is_tty() or _update.is_editable():
+        return
+    info = _update.update_available(timeout=2.5)
+    if not info:
+        return
+    cur, latest = info
+    try:
+        ans = input(_yel(f"decmux {latest} available (you have {cur}). update now? [y/N] "))
+    except (EOFError, KeyboardInterrupt):
+        return
+    if ans.strip().lower() in ("y", "yes"):
+        print(_gray("updating…"))
+        if _update.run_install(latest):
+            print(_grn(f"updated to {latest} — restart decmux (/quit then `decmux`)"))
+        else:
+            print(_red("update failed — try `decmux update` to see the error"))
+
+
 def _wakeup_label(store) -> str:
     """`next: <what> Nm (HH:MM)` — when the supervision loop next acts proactively."""
     raw = store.get_meta("next_wakeup_ts", "")
@@ -596,6 +619,8 @@ def _toolbar(st: AppState) -> str:
 def repl(workspace_uuid: str, *, notify: bool = True) -> int:
     import shutil as _shutil
     import sys as _sys
+
+    _maybe_update()                     # offer an update before the TUI starts (y/N)
 
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import WordCompleter

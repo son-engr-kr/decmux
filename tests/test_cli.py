@@ -109,3 +109,18 @@ def test_agent_launch_plan():
     assert argv[0] == "claude" and "--dangerously-skip-permissions" in argv
     assert env["DECMUX_ROLE"] == "agent" and env["CMUX_SURFACE_ID"] == "s"
     assert env["PATH"].startswith("/g:") and env["DECMUX_REAL_CMUX"] == "/r/cmux"
+
+
+def test_update_check_reports_when_newer(wired, monkeypatch, capsys):
+    from decmux import update
+    monkeypatch.setattr(update, "latest_version", lambda timeout=3.0: "99.9.9")
+    monkeypatch.setattr(update, "is_editable", lambda: False)
+    assert cli.main(["update", "--check"]) == 0
+    assert "update available" in capsys.readouterr().out
+
+
+def test_update_up_to_date(wired, monkeypatch, capsys):
+    from decmux import update
+    monkeypatch.setattr(update, "latest_version", lambda timeout=3.0: "0.0.1")  # older
+    assert cli.main(["update"]) == 0
+    assert "up to date" in capsys.readouterr().out
