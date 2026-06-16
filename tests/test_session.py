@@ -230,3 +230,24 @@ def test_momentum_silent_without_goal_or_with_open_tasks(wired):
     store.add_task(kind="command", body="x", to_whom="manager")
     sess._momentum_step(now=0, rows=rows)               # open task -> the pulse's job, not momentum
     assert delivers == []
+
+
+def test_next_wakeup_reports_soonest_open_task(wired):
+    sess, store, delivers, notifies = wired
+    sess.cfg = WorkspaceConfig(momentum=True, momentum_cooldown=300.0)
+    tid = store.add_task(kind="command", body="x", to_whom="manager", now=1000.0)
+    rows = [_lrow("m1", "surface:9", "manager", "idle")]
+    ts, label = sess._next_wakeup(now=1000.0, rows=rows)
+    assert label == f"task #{tid} review"
+    assert abs(ts - (1000.0 + session.TASK_REVIEW_AFTER)) < 1
+    sess._persist_next_wakeup(now=1000.0, rows=rows)
+    assert store.get_meta("next_wakeup_kind") == f"task #{tid} review"
+    assert store.get_meta("next_wakeup_ts")
+
+
+def test_next_wakeup_none_when_idle_and_empty(wired):
+    sess, store, delivers, notifies = wired
+    ts, label = sess._next_wakeup(now=0.0, rows=[])
+    assert ts is None and label == ""
+    sess._persist_next_wakeup(now=0.0, rows=[])
+    assert store.get_meta("next_wakeup_ts") == ""

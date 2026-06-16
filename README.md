@@ -73,7 +73,9 @@ decmux run             # headless supervision (no REPL)
 ```
 
 The REPL has a persistent bottom prompt with a live status toolbar (agent
-counts, open tasks, goal) and tab-completion of commands and agent names. Type to
+counts, open tasks, goal, and the **next proactive wakeup** — `next:<what> Nm
+(HH:MM)`, the minutes until the loop next acts on its own) and tab-completion of
+commands and agent names. Type to
 message the current target; manager→you messages and state transitions stream in
 live *above* the prompt. `/help` lists commands (`/to`, `/status`, `/tasks`,
 `/feed`, `/report`, `/goal`, `/quit`).

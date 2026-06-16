@@ -185,15 +185,43 @@ class Session:
             return
         if not self.store.manager():
             return                              # no manager to nudge; an idle goal is the human's
+        nxt = int(self.cfg.momentum_cooldown // 60)
         bus.send(
             self.store,
             "team idle and the goal is not done. Advance it: decide the next concrete "
             "step toward the goal, spin up short-term workers (use `decmux spawn "
             "--worktree` for parallel/exploratory directions), and keep momentum — do "
-            "not sit waiting on one task. If the goal truly is complete, report to the human.",
+            "not sit waiting on one task. If the goal truly is complete, report to the "
+            f"human. (decmux will re-check in ~{nxt}m if the team is still idle.)",
             to="manager", frm="decmux", track_task=False)
         self._momentum_armed = True
         self._momentum_ts = now
+
+    # --- next wakeup: when decmux will next act proactively (surfaced in the REPL) ---
+    def _next_wakeup(self, now: float, rows: list[watch.Row]) -> tuple[float | None, str]:
+        """Soonest time decmux will next act on its own, as (ts, label). Persisted to
+        meta each tick so the REPL can show when the loop wakes and the minutes left."""
+        cands: list[tuple[float, str]] = []
+        coasting = (bool(self.store.get_goal()) and bool(rows)
+                    and all(r.state == "idle" for r in rows)
+                    and not self.store.open_tasks())
+        if coasting and self.cfg.momentum:
+            cands.append((self._momentum_ts + self.cfg.momentum_cooldown, "momentum"))
+        for t in self.store.open_tasks():
+            last = t.get("last_reminded_at") or t.get("delivered_at") or t.get("ts") or now
+            cands.append((last + TASK_REVIEW_AFTER, f"task #{t['id']} review"))
+        for key, since in self._stuck_since.items():
+            if key in self._poked and key not in self._escalated:
+                cands.append((since + self.cfg.stuck_poke_after + self.cfg.escalation_timeout,
+                              "escalate"))
+        if not cands:
+            return None, ""
+        return min(cands, key=lambda c: c[0])
+
+    def _persist_next_wakeup(self, now: float, rows: list[watch.Row]) -> None:
+        ts, label = self._next_wakeup(now, rows)
+        self.store.set_meta("next_wakeup_ts", f"{ts:.0f}" if ts is not None else "")
+        self.store.set_meta("next_wakeup_kind", label)
 
     # --- manager pulse: keep open tasks from rotting ---
     def _manager_pulse(self, now: float) -> None:
@@ -354,6 +382,7 @@ class Session:
 
         self._manager_pulse(now)
         self._momentum_step(now, rows)
+        self._persist_next_wakeup(now, rows)
         if self.pin:
             self._pin(rows)
         self.store.prune_absent(present)

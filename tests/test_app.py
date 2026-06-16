@@ -140,6 +140,18 @@ def test_toolbar_renders(st):
     assert "decmux" in bar and "->manager" in bar
 
 
+def test_wakeup_label_shows_kind_and_minutes(st):
+    import time
+    st.store.set_meta("next_wakeup_ts", f"{time.time() + 185:.0f}")
+    st.store.set_meta("next_wakeup_kind", "momentum")
+    label = app._wakeup_label(st.store)
+    assert "momentum" in label and "3m" in label and "next:" in label
+
+
+def test_wakeup_label_empty_when_unset(st):
+    assert app._wakeup_label(st.store) == ""
+
+
 def test_completions_carry_descriptions(st):
     st.store.upsert_state(surface_uuid="a", surface_ref="surface:1", title="worker", state="idle")
     words, meta = app._completions(st.store)

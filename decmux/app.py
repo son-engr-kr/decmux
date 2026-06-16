@@ -304,12 +304,24 @@ def _startup_guide(store) -> None:
     )
 
 
+def _wakeup_label(store) -> str:
+    """`next: <what> Nm (HH:MM)` — when the supervision loop next acts proactively."""
+    raw = store.get_meta("next_wakeup_ts", "")
+    if not raw:
+        return ""
+    ts = float(raw)
+    mins = max(0, round((ts - time.time()) / 60))
+    kind = (store.get_meta("next_wakeup_kind", "") or "wake")[:16]
+    return f"  next:{kind} {mins}m ({time.strftime('%H:%M', time.localtime(ts))})"
+
+
 def _toolbar(st: AppState) -> str:
     counts = Counter(a["state"] for a in st.store.list_agents())
     parts = "  ".join(f"{_GLYPH.get(s, '·')}{n}" for s, n in counts.items()) or "no agents"
     goal = st.store.get_goal()
-    tail = f"  goal: {goal[:32]}" if goal else ""
-    return f" decmux  {parts}  open:{len(st.store.open_tasks())}  ->{st.target}{tail} "
+    tail = f"  goal: {goal[:28]}" if goal else ""
+    return (f" decmux  {parts}  open:{len(st.store.open_tasks())}"
+            f"  ->{st.target}{_wakeup_label(st.store)}{tail} ")
 
 
 def repl(workspace_uuid: str, *, notify: bool = True) -> int:
@@ -365,7 +377,8 @@ def repl(workspace_uuid: str, *, notify: bool = True) -> int:
                               ("class:pr", f"decmux[{st.target}{tag}]> ")])
 
     style = Style.from_dict({"sep": "fg:#666666", "pr": "bold"})
-    psession: PromptSession = PromptSession(multiline=True, key_bindings=kb, style=style)
+    psession: PromptSession = PromptSession(multiline=True, key_bindings=kb, style=style,
+                                            refresh_interval=15)  # tick the toolbar countdown
     _sys.stdout.write("\x1b[>4;1m")     # ask the terminal to report Shift+Enter (modifyOtherKeys L1)
     _sys.stdout.flush()
     print(f"decmux — workspace {workspace_uuid}. supervising in the background.")
